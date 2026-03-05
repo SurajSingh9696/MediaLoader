@@ -22,9 +22,15 @@ export const metadata: Metadata = {
     "MediaLoader",
   ],
   icons: {
-    icon: "/logo.png",
-    apple: "/logo.png",
-    shortcut: "/logo.png",
+    icon: [
+      { url: "/logo.png", type: "image/png" },
+    ],
+    apple: [
+      { url: "/logo.png", type: "image/png" },
+    ],
+    shortcut: [
+      { url: "/logo.png", type: "image/png" },
+    ],
   },
   openGraph: {
     title: "MediaLoader — Download Videos from Anywhere in Seconds",
@@ -44,6 +50,9 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       {/* Prevent theme flash before JS loads */}
       <head>
+        <link rel="icon" type="image/png" href="/logo.png" />
+        <link rel="shortcut icon" type="image/png" href="/logo.png" />
+        <link rel="apple-touch-icon" href="/logo.png" />
         <script
           dangerouslySetInnerHTML={{
             __html: `

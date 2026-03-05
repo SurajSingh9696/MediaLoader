@@ -70,26 +70,42 @@ def _classify_error(exc: Exception) -> tuple[int, str]:
 
     if "unsupported url" in msg_lower:
         return 422, f"Platform not supported. Ensure the URL is from a supported site."
-    if "private video" in msg_lower or "sign in" in msg_lower:
+    if "sign in to confirm" in msg_lower or "confirm you're not a bot" in msg_lower:
+        return 403, "Bot detection triggered. Please try again in a moment or use a different video."
+    if "private video" in msg_lower or "this video is private" in msg_lower:
         return 403, "This video is private or requires authentication."
+    if "login required" in msg_lower or "requires authentication" in msg_lower:
+        return 403, "This content requires login or authentication."
     if "age" in msg_lower and ("restrict" in msg_lower or "confirm" in msg_lower):
-        return 403, "This video is age-restricted."
-    if "copyright" in msg_lower or "removed" in msg_lower:
-        return 451, "This video has been removed due to copyright or policy reasons."
+        return 403, "This video is age-restricted and cannot be downloaded."
+    if "copyright" in msg_lower or "dmca" in msg_lower:
+        return 451, "This video has been removed due to copyright or DMCA reasons."
+    if "removed" in msg_lower or "deleted" in msg_lower:
+        return 404, "This video has been removed or deleted."
     if "not available" in msg_lower or "unavailable" in msg_lower:
         return 404, "Video not found or unavailable."
-    if "http error 429" in msg_lower or "rate limit" in msg_lower:
-        return 429, "Too many requests. Please wait a moment and try again."
-    if "http error 403" in msg_lower:
-        return 403, "Access denied by the platform. The video may be private."
+    if "http error 429" in msg_lower or "rate limit" in msg_lower or "too many requests" in msg_lower:
+        return 429, "Rate limit reached. Please wait a moment and try again."
+    if "http error 403" in msg_lower or "forbidden" in msg_lower:
+        return 403, "Access denied by the platform. The content may be restricted."
     if "http error 404" in msg_lower:
         return 404, "Video not found at the given URL."
-    if "no video formats found" in msg_lower:
+    if "http error 410" in msg_lower or "gone" in msg_lower:
+        return 410, "This video is no longer available."
+    if "http error 451" in msg_lower:
+        return 451, "This content is unavailable for legal reasons."
+    if "http error 5" in msg_lower:
+        return 502, "The platform's server is experiencing issues. Please try again later."
+    if "no video formats found" in msg_lower or "no formats found" in msg_lower:
         return 422, "No downloadable formats found for this video."
     if "ffmpeg" in msg_lower or "ffprobe" in msg_lower:
-        return 500, "FFmpeg is not installed or not in PATH. Audio extraction requires FFmpeg."
+        return 500, "FFmpeg processing error. Audio extraction requires FFmpeg."
     if "connection" in msg_lower or "network" in msg_lower or "timeout" in msg_lower:
         return 502, "Network error while reaching the video source. Please try again."
+    if "geo" in msg_lower and "block" in msg_lower:
+        return 451, "This video is geo-blocked in your region."
+    if "premium" in msg_lower or "subscription" in msg_lower:
+        return 403, "This content requires a premium subscription."
 
     return 500, f"Extraction failed: {msg[:300]}"
 
@@ -106,6 +122,45 @@ def _base_ydl_opts() -> dict:
         "http_chunk_size": 10 * 1024 * 1024,
         "updatetime": False,
         "noprogress": True,
+        # Enhanced headers to bypass bot detection across platforms
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "http_headers": {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+        },
+        # Platform-specific extractor arguments for robustness
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+                "player_skip": ["webpage", "configs"],
+                "skip": ["hls", "dash"],  # Prefer direct formats
+            },
+            "instagram": {
+                "api": ["graphql", "web"],  # Use multiple API endpoints
+            },
+            "tiktok": {
+                "api": ["mobile_api", "web_api"],
+                "webpage_download": True,
+            },
+            "twitter": {
+                "api": ["syndication", "graphql"],
+            },
+        },
+        # Additional robustness settings
+        "nocheckcertificate": False,  # Keep certificate checks for security
+        "prefer_insecure": False,
+        "no_check_certificates": False,
+        "geo_bypass": True,
+        "geo_bypass_country": "US",
     }
     if _ffmpeg_exe:
         opts["ffmpeg_location"] = _ffmpeg_exe
@@ -180,11 +235,20 @@ async def get_metadata(url: str) -> VideoMetadata:
 
 
 def _build_video_format_selector(format_id: Optional[str], info_formats: list[dict]) -> str:
+    """
+    Build a robust format selector that works across platforms.
+    Provides multiple fallbacks to ensure download success.
+    """
     if not format_id:
+        # Multi-platform fallback chain
         return (
             "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4][height<=1080]+bestaudio/"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
             "bestvideo[ext=mp4]+bestaudio/"
+            "bestvideo[height<=1080]+bestaudio/"
             "bestvideo+bestaudio/"
+            "best[ext=mp4][height<=1080]/"
             "best[ext=mp4]/best"
         )
 
@@ -199,6 +263,7 @@ def _build_video_format_selector(format_id: Optional[str], info_formats: list[di
     if has_audio:
         return format_id
 
+    # Video-only format needs audio merging with fallbacks
     return f"{format_id}+bestaudio[ext=m4a]/{format_id}+bestaudio/{format_id}"
 
 
@@ -231,8 +296,16 @@ async def download_video(url: str, format_id: Optional[str] = None) -> tuple[Pat
             {
                 "key": "FFmpegVideoConvertor",
                 "preferedformat": "mp4",
-            }
+            },
+            {
+                "key": "FFmpegMetadata",
+                "add_metadata": True,
+            },
         ],
+        # Additional download robustness
+        "ignoreerrors": False,
+        "no_color": True,
+        "extract_flat": False,
     }
 
     def _download() -> dict:
@@ -277,7 +350,7 @@ async def download_audio(url: str, quality: str = "192") -> tuple[Path, str]:
     ydl_opts = {
         **_base_ydl_opts(),
         "outtmpl": output_template,
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[ext=mp3]/bestaudio/best",
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -288,6 +361,13 @@ async def download_audio(url: str, quality: str = "192") -> tuple[Path, str]:
                 "key": "FFmpegMetadata",
                 "add_metadata": True,
             },
+            {
+                "key": "EmbedThumbnail",  # Embed thumbnail as album art
+            },
+        ],
+        "writethumbnail": True,  # Download thumbnail for embedding
+        "postprocessor_args": [
+            "-ar", "44100",  # Standard audio sample rate
         ],
     }
 

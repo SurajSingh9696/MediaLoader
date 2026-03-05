@@ -113,6 +113,7 @@ export default function UrlInput({ onFetch, onReset, isLoading, hasResult }: Url
             <Button
               type="submit"
               size="lg"
+              variant="secondary"
               disabled={isLoading}
               className="w-full sm:w-auto shrink-0 h-12 sm:h-13"
             >
