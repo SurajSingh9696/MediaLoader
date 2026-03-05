@@ -1,0 +1,324 @@
+import os
+import re
+import uuid
+import asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Optional
+
+import imageio_ffmpeg
+import yt_dlp
+from yt_dlp.utils import DownloadError, ExtractorError, GeoRestrictedError, UnavailableVideoError
+
+from backend.core.config import settings
+from backend.models.schemas import VideoMetadata, VideoFormat
+
+logger = logging.getLogger(__name__)
+
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
+
+# Resolve the bundled FFmpeg binary (works without a system-level install).
+# Pass the full exe path — yt-dlp accepts either a directory or a direct path,
+# but imageio_ffmpeg uses a versioned filename (e.g. ffmpeg-win-x86_64-v7.1.exe)
+# that yt-dlp won't find via directory scan.
+try:
+    _ffmpeg_exe: Optional[str] = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    _ffmpeg_exe = None
+
+_SKIP_EXTS = {"mhtml", "vtt", "srt", "ttml", "srv1", "srv2", "srv3", "json3"}
+_VIDEO_ONLY_CODECS = {"none", ""}
+
+
+def _extract_platform(url: str) -> str:
+    lower = url.lower()
+    if "youtube.com" in lower or "youtu.be" in lower:
+        return "YouTube"
+    if "instagram.com" in lower:
+        return "Instagram"
+    if "tiktok.com" in lower:
+        return "TikTok"
+    if "twitter.com" in lower or "x.com" in lower:
+        return "Twitter / X"
+    if "facebook.com" in lower or "fb.watch" in lower:
+        return "Facebook"
+    if "reddit.com" in lower:
+        return "Reddit"
+    if "vimeo.com" in lower:
+        return "Vimeo"
+    if "dailymotion.com" in lower:
+        return "Dailymotion"
+    if "twitch.tv" in lower:
+        return "Twitch"
+    return "Unknown"
+
+
+def _sanitize_filename(name: str) -> str:
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+    return name[:120].strip() or "media"
+
+
+def _classify_error(exc: Exception) -> tuple[int, str]:
+    msg = str(exc)
+    msg_lower = msg.lower()
+
+    if isinstance(exc, GeoRestrictedError):
+        return 451, "This video is not available in your region."
+    if isinstance(exc, UnavailableVideoError):
+        return 404, "Video is unavailable or has been removed."
+
+    if "unsupported url" in msg_lower:
+        return 422, f"Platform not supported. Ensure the URL is from a supported site."
+    if "private video" in msg_lower or "sign in" in msg_lower:
+        return 403, "This video is private or requires authentication."
+    if "age" in msg_lower and ("restrict" in msg_lower or "confirm" in msg_lower):
+        return 403, "This video is age-restricted."
+    if "copyright" in msg_lower or "removed" in msg_lower:
+        return 451, "This video has been removed due to copyright or policy reasons."
+    if "not available" in msg_lower or "unavailable" in msg_lower:
+        return 404, "Video not found or unavailable."
+    if "http error 429" in msg_lower or "rate limit" in msg_lower:
+        return 429, "Too many requests. Please wait a moment and try again."
+    if "http error 403" in msg_lower:
+        return 403, "Access denied by the platform. The video may be private."
+    if "http error 404" in msg_lower:
+        return 404, "Video not found at the given URL."
+    if "no video formats found" in msg_lower:
+        return 422, "No downloadable formats found for this video."
+    if "ffmpeg" in msg_lower or "ffprobe" in msg_lower:
+        return 500, "FFmpeg is not installed or not in PATH. Audio extraction requires FFmpeg."
+    if "connection" in msg_lower or "network" in msg_lower or "timeout" in msg_lower:
+        return 502, "Network error while reaching the video source. Please try again."
+
+    return 500, f"Extraction failed: {msg[:300]}"
+
+
+def _base_ydl_opts() -> dict:
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": settings.yt_dlp_socket_timeout,
+        "retries": settings.yt_dlp_retries,
+        "fragment_retries": settings.yt_dlp_retries,
+        "concurrent_fragment_downloads": 4,
+        "http_chunk_size": 10 * 1024 * 1024,
+        "updatetime": False,
+        "noprogress": True,
+    }
+    if _ffmpeg_exe:
+        opts["ffmpeg_location"] = _ffmpeg_exe
+    return opts
+
+
+async def get_metadata(url: str) -> VideoMetadata:
+    opts = {
+        **_base_ydl_opts(),
+        "skip_download": True,
+    }
+
+    loop = asyncio.get_running_loop()
+
+    def _extract() -> dict:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info is None:
+                raise ValueError("No information returned for this URL")
+            return info
+
+    try:
+        info = await loop.run_in_executor(_executor, _extract)
+    except (DownloadError, ExtractorError) as exc:
+        raise exc
+    except Exception as exc:
+        raise exc
+
+    raw_formats = info.get("formats") or []
+    formats: list[VideoFormat] = []
+
+    for f in raw_formats:
+        ext = (f.get("ext") or "").lower()
+        if ext in _SKIP_EXTS:
+            continue
+        vcodec = f.get("vcodec") or ""
+        acodec = f.get("acodec") or ""
+        if vcodec == "none" and acodec == "none":
+            continue
+
+        formats.append(
+            VideoFormat(
+                format_id=str(f.get("format_id", "")),
+                resolution=f.get("resolution"),
+                ext=ext,
+                filesize=f.get("filesize") or f.get("filesize_approx"),
+                acodec=acodec or None,
+                vcodec=vcodec or None,
+                tbr=f.get("tbr"),
+                abr=f.get("abr"),
+                vbr=f.get("vbr"),
+                format_note=f.get("format_note"),
+                height=f.get("height"),
+                width=f.get("width"),
+            )
+        )
+
+    description = (info.get("description") or "")[:400] or None
+
+    return VideoMetadata(
+        title=info.get("title") or "Untitled",
+        thumbnail=info.get("thumbnail"),
+        duration=info.get("duration"),
+        uploader=info.get("uploader") or info.get("channel"),
+        platform=_extract_platform(url),
+        url=url,
+        formats=formats,
+        description=description,
+        view_count=info.get("view_count"),
+        like_count=info.get("like_count"),
+    )
+
+
+def _build_video_format_selector(format_id: Optional[str], info_formats: list[dict]) -> str:
+    if not format_id:
+        return (
+            "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4]+bestaudio/"
+            "bestvideo+bestaudio/"
+            "best[ext=mp4]/best"
+        )
+
+    fmt = next((f for f in info_formats if str(f.get("format_id")) == format_id), None)
+    if fmt is None:
+        return format_id
+
+    vcodec = fmt.get("vcodec") or ""
+    acodec = fmt.get("acodec") or ""
+    has_audio = acodec and acodec != "none"
+
+    if has_audio:
+        return format_id
+
+    return f"{format_id}+bestaudio[ext=m4a]/{format_id}+bestaudio/{format_id}"
+
+
+async def download_video(url: str, format_id: Optional[str] = None) -> tuple[Path, str]:
+    temp_dir = Path(settings.temp_download_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    session_id = uuid.uuid4().hex
+    output_template = str(temp_dir / f"{session_id}.%(ext)s")
+
+    probe_opts = {**_base_ydl_opts(), "skip_download": True}
+
+    loop = asyncio.get_running_loop()
+
+    def _probe() -> list[dict]:
+        with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info.get("formats") or [] if info else []
+
+    info_formats = await loop.run_in_executor(_executor, _probe)
+
+    format_selector = _build_video_format_selector(format_id, info_formats)
+
+    ydl_opts = {
+        **_base_ydl_opts(),
+        "outtmpl": output_template,
+        "format": format_selector,
+        "merge_output_format": "mp4",
+        "postprocessors": [
+            {
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "mp4",
+            }
+        ],
+    }
+
+    def _download() -> dict:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info is None:
+                raise RuntimeError("Download returned no information")
+            return info
+
+    info = await loop.run_in_executor(_executor, _download)
+
+    title = _sanitize_filename(info.get("title") or "video")
+
+    mp4_files = list(temp_dir.glob(f"{session_id}*.mp4"))
+    if mp4_files:
+        file_path = mp4_files[0]
+        return file_path, f"{title}.mp4"
+
+    all_files = sorted(
+        [f for f in temp_dir.glob(f"{session_id}.*") if not f.suffix in (".part", ".ytdl")],
+        key=lambda f: f.stat().st_size,
+        reverse=True,
+    )
+    if not all_files:
+        raise RuntimeError("Downloaded file not found in temp directory")
+
+    file_path = all_files[0]
+    ext = file_path.suffix.lstrip(".") or "mp4"
+    return file_path, f"{title}.{ext}"
+
+
+async def download_audio(url: str, quality: str = "192") -> tuple[Path, str]:
+    temp_dir = Path(settings.temp_download_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    if quality not in ("128", "192", "320"):
+        quality = "192"
+
+    session_id = uuid.uuid4().hex
+    output_template = str(temp_dir / f"{session_id}.%(ext)s")
+
+    ydl_opts = {
+        **_base_ydl_opts(),
+        "outtmpl": output_template,
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": quality,
+            },
+            {
+                "key": "FFmpegMetadata",
+                "add_metadata": True,
+            },
+        ],
+    }
+
+    loop = asyncio.get_running_loop()
+
+    def _download() -> dict:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info is None:
+                raise RuntimeError("Audio download returned no information")
+            return info
+
+    info = await loop.run_in_executor(_executor, _download)
+
+    title = _sanitize_filename(info.get("title") or "audio")
+
+    mp3_files = sorted(
+        temp_dir.glob(f"{session_id}*.mp3"),
+        key=lambda f: f.stat().st_size,
+        reverse=True,
+    )
+    if not mp3_files:
+        raise RuntimeError("MP3 file not found after extraction. Ensure FFmpeg is installed and in PATH.")
+
+    return mp3_files[0], f"{title}.mp3"
+
+
+def cleanup_file(path: Path) -> None:
+    try:
+        if path and path.exists():
+            os.remove(path)
+            logger.debug("Cleaned up temp file: %s", path)
+    except OSError as exc:
+        logger.warning("Failed to clean up %s: %s", path, exc)

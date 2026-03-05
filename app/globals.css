@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/* ─── Dark theme — warm espresso (R≥G≥B throughout, no cold blue) ── */
+:root,
+.dark {
+  --bg:            #0d0a09;   /* stone-950: R13 G10 B9 — warm near-black  */
+  --bg-subtle:     #1c1714;   /* stone-900: R28 G23 B20 — warm dark brown  */
+  --surface:       rgba(255, 243, 225, 0.058);
+  --surface-hover: rgba(255, 243, 225, 0.10);
+  --border:        rgba(255, 243, 225, 0.10);
+  --border-accent: rgba(244, 63, 94, 0.38);
+  --text:          #fdf4ed;   /* warm off-white: R253 G244 B237 */
+  --text-muted:    rgba(253, 244, 237, 0.54);
+  --text-subtle:   rgba(253, 244, 237, 0.34);
+  --accent:        #f43f5e;   /* rose-500   */
+  --accent-2:      #e879f9;   /* fuchsia-400 — brighter, warmer than d946ef */
+  --accent-3:      #fb923c;   /* orange-400 — warm tricolor finish */
+  --glow:          rgba(244, 63, 94, 0.24);
+  --scrollbar:     rgba(244, 63, 94, 0.28);
+  --scrollbar-hov: rgba(244, 63, 94, 0.52);
+  --selection:     rgba(232, 121, 249, 0.28);
+}
+
+/* ─── Light theme — warm cream (R≥G≥B, genuine brightness) ──────── */
+.light {
+  --bg:            #fffdf8;   /* warm white: R255 G253 B248 — not cold blue */
+  --bg-subtle:     #f5ece0;   /* warm cream: R245 G236 B224 */
+  --surface:       rgba(26, 14, 6, 0.07);
+  --surface-hover: rgba(26, 14, 6, 0.13);
+  --border:        rgba(26, 14, 6, 0.14);
+  --border-accent: rgba(225, 29, 72, 0.32);
+  --text:          #1a0e06;   /* warm near-black: R26 G14 B6 */
+  --text-muted:    rgba(26, 14, 6, 0.70);
+  --text-subtle:   rgba(26, 14, 6, 0.55);
+  --accent:        #e11d48;   /* rose-600   */
+  --accent-2:      #c026d3;   /* fuchsia-600 */
+  --accent-3:      #ea580c;   /* orange-600  */
+  --glow:          rgba(225, 29, 72, 0.12);
+  --scrollbar:     rgba(225, 29, 72, 0.22);
+  --scrollbar-hov: rgba(225, 29, 72, 0.44);
+  --selection:     rgba(192, 38, 211, 0.20);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  min-height: 100dvh;
+  transition: background-color 0.35s ease, color 0.25s ease;
+}
+
+/* ─── Focus ring ─────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ─── Scrollbar ─────────────────────────── */
+::-webkit-scrollbar        { width: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--scrollbar); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hov); }
+
+::selection {
+  background: var(--selection);
+  color: var(--text);
+}
+
+/* ─── Indeterminate progress ─────────────── */
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(150%); }
+  100% { transform: translateX(300%); }
+}
+
+/* ─── Mobile helpers ────────────────────── */
+* { -webkit-tap-highlight-color: transparent; }
+html, body { -webkit-overflow-scrolling: touch; }

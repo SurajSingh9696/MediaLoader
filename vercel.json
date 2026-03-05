@@ -1,0 +1,9 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "next build",
+  "outputDirectory": ".next",
+  "installCommand": "npm ci",
+  "env": {
+    "PYTHON_SERVICE_URL": "@python_service_url"
+  }
+}
