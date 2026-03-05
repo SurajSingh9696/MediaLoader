@@ -32,7 +32,6 @@ export const metadata: Metadata = {
       "Free video downloader supporting YouTube, Instagram, TikTok, Twitter, and 100+ platforms.",
     type: "website",
     images: [{ url: "/logo.png" }],
-    favicon: "/logo.png",
   },
 }
 
