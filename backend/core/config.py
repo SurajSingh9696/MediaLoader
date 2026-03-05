@@ -5,9 +5,7 @@ class Settings(BaseSettings):
     temp_download_dir: str = "/tmp/mediafetch"
     max_filesize_bytes: int = 2 * 1024 * 1024 * 1024
     allowed_origins: list[str] = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
+        "https://media-loader.vercel.app",
     ]
     yt_dlp_retries: int = 5
     yt_dlp_socket_timeout: int = 30
