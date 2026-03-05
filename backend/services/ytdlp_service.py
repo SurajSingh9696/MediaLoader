@@ -70,6 +70,8 @@ def _classify_error(exc: Exception) -> tuple[int, str]:
 
     if "unsupported url" in msg_lower:
         return 422, f"Platform not supported. Ensure the URL is from a supported site."
+    if "failed to extract any player response" in msg_lower:
+        return 503, "YouTube is temporarily blocking requests. Please try again in a few moments."
     if "sign in to confirm" in msg_lower or "confirm you're not a bot" in msg_lower:
         return 403, "Bot detection triggered. Please try again in a moment or use a different video."
     if "private video" in msg_lower or "this video is private" in msg_lower:
@@ -140,9 +142,8 @@ def _base_ydl_opts() -> dict:
         # Platform-specific extractor arguments for robustness
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"],
-                "player_skip": ["webpage", "configs"],
-                "skip": ["hls", "dash"],  # Prefer direct formats
+                "player_client": ["ios", "android", "web"],
+                "player_skip": ["configs"],
             },
             "instagram": {
                 "api": ["graphql", "web"],  # Use multiple API endpoints
@@ -168,26 +169,69 @@ def _base_ydl_opts() -> dict:
 
 
 async def get_metadata(url: str) -> VideoMetadata:
-    opts = {
-        **_base_ydl_opts(),
-        "skip_download": True,
-    }
-
+    """
+    Extract video metadata with fallback retry mechanism for YouTube.
+    Tries different player clients if the first attempt fails.
+    """
     loop = asyncio.get_running_loop()
-
-    def _extract() -> dict:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if info is None:
-                raise ValueError("No information returned for this URL")
-            return info
-
-    try:
-        info = await loop.run_in_executor(_executor, _extract)
-    except (DownloadError, ExtractorError) as exc:
-        raise exc
-    except Exception as exc:
-        raise exc
+    
+    # Define multiple configuration strategies
+    strategies = [
+        # Strategy 1: iOS client (most reliable)
+        {"player_client": ["ios", "android", "web"]},
+        # Strategy 2: Android only
+        {"player_client": ["android"]},
+        # Strategy 3: Web client with mobile API
+        {"player_client": ["mweb", "web"]},
+        # Strategy 4: No extractor args (default behavior)
+        {},
+    ]
+    
+    last_exception = None
+    
+    for strategy_idx, extractor_override in enumerate(strategies):
+        opts = {
+            **_base_ydl_opts(),
+            "skip_download": True,
+        }
+        
+        # Override YouTube extractor args for this strategy
+        if extractor_override and "youtube" in url.lower():
+            opts["extractor_args"] = {
+                **opts.get("extractor_args", {}),
+                "youtube": extractor_override
+            }
+        
+        def _extract() -> dict:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info is None:
+                    raise ValueError("No information returned for this URL")
+                return info
+        
+        try:
+            info = await loop.run_in_executor(_executor, _extract)
+            break  # Success, exit the retry loop
+        except (DownloadError, ExtractorError) as exc:
+            last_exception = exc
+            # If this is not the last strategy, try the next one
+            if strategy_idx < len(strategies) - 1:
+                logger.warning(f"Extraction attempt {strategy_idx + 1} failed for {url}, trying alternative method...")
+                await asyncio.sleep(0.5)  # Brief delay between retries
+                continue
+            # If this was the last strategy, raise the exception
+            raise exc
+        except Exception as exc:
+            last_exception = exc
+            if strategy_idx < len(strategies) - 1:
+                logger.warning(f"Extraction attempt {strategy_idx + 1} failed for {url}, trying alternative method...")
+                await asyncio.sleep(0.5)
+                continue
+            raise exc
+    
+    # If we somehow exit the loop without info, raise the last exception
+    if last_exception:
+        raise last_exception
 
     raw_formats = info.get("formats") or []
     formats: list[VideoFormat] = []
