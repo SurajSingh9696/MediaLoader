@@ -19,96 +19,39 @@ ln -sf "$NODE_BIN" /usr/local/bin/node 2>/dev/null || true
 echo "[start.sh] Node.js: $NODE_BIN ($($NODE_BIN --version))"
 echo "[start.sh] npm: $($NPM_BIN --version 2>/dev/null || echo not found)"
 
-# ── 2. Install bgutil npm package (correct unscoped name) ─────────────────
-# The server is the npm package 'bgutil-ytdlp-pot-provider' (NOT @yt-dlp/...).
-# We install it into a dedicated dir using a minimal package.json.
-BGUTIL_DIR="/opt/render/project/src/bgutil-npm"
-SERVER_JS=""
+# ── 2. Clone and Build from GitHub ─────────────────────────────────────────
+echo "[start.sh] Setting up bgutil from GitHub..."
+GH_DIR="/opt/render/project/src/bgutil-gh"
 
-# Re-use existing install if dist/server.js is present
-if [ -f "$BGUTIL_DIR/node_modules/bgutil-ytdlp-pot-provider/dist/server.js" ]; then
-    SERVER_JS="$BGUTIL_DIR/node_modules/bgutil-ytdlp-pot-provider/dist/server.js"
-    echo "[start.sh] bgutil already installed: $SERVER_JS"
-else
-    echo "[start.sh] Installing bgutil-ytdlp-pot-provider npm package..."
-    mkdir -p "$BGUTIL_DIR"
-    echo '{"private":true}' > "$BGUTIL_DIR/package.json"
-    (cd "$BGUTIL_DIR" && "$NPM_BIN" install bgutil-ytdlp-pot-provider --save 2>&1)
-    # Find server.js under the installed package
-    SERVER_JS=$(find "$BGUTIL_DIR/node_modules/bgutil-ytdlp-pot-provider" -name "server.js" 2>/dev/null | grep -v '__tests__' | head -1)
-    if [ -n "$SERVER_JS" ]; then
-        echo "[start.sh] bgutil installed: $SERVER_JS"
-    else
-        echo "[start.sh] npm install may have failed; listing node_modules..."
-        ls "$BGUTIL_DIR/node_modules/" 2>/dev/null | head -20
-    fi
+if [ ! -d "$GH_DIR/.git" ]; then
+    git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider "$GH_DIR" --depth=1 2>&1
 fi
 
-# ── 3. Fallback: clone from GitHub ────────────────────────────────────────
-if [ -z "$SERVER_JS" ]; then
-    echo "[start.sh] Trying GitHub clone fallback..."
-    GH_DIR="/opt/render/project/src/bgutil-gh"
-    if [ ! -d "$GH_DIR/.git" ]; then
-        git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider "$GH_DIR" --depth=1 2>&1
-    fi
-    if [ -d "$GH_DIR" ]; then
-        echo "[start.sh] Cloned repo top-level files:"
-        ls "$GH_DIR/" 2>/dev/null
+REPO_SERVER_DIR="$GH_DIR/server"
+MAIN_JS="$REPO_SERVER_DIR/build/main.js"
 
-        # Find any package.json (excluding node_modules)
-        REPO_PKG=$(find "$GH_DIR" -name "package.json" -not -path "*/node_modules/*" 2>/dev/null | head -1)
-        echo "[start.sh] package.json location: ${REPO_PKG:-none found}"
-
-        if [ -n "$REPO_PKG" ]; then
-            REPO_ROOT=$(dirname "$REPO_PKG")
-            echo "[start.sh] npm install in: $REPO_ROOT"
-            (cd "$REPO_ROOT" && "$NPM_BIN" install 2>&1)
-            # Compile TypeScript using the locally-installed tsc (NOT npx/global)
-            LOCAL_TSC="$REPO_ROOT/node_modules/.bin/tsc"
-            if [ -f "$REPO_ROOT/tsconfig.json" ] && [ -f "$LOCAL_TSC" ]; then
-                echo "[start.sh] Compiling TypeScript with local tsc..."
-                (cd "$REPO_ROOT" && "$NODE_BIN" "$LOCAL_TSC" 2>&1) || true
-            fi
-            # Find compiled server.js outside node_modules
-            SERVER_JS=$(find "$REPO_ROOT" -name "server.js" -not -path "*/node_modules/*" 2>/dev/null | head -1)
-            if [ -n "$SERVER_JS" ]; then
-                echo "[start.sh] GitHub server.js: $SERVER_JS"
-            else
-                # Fallback: run TypeScript directly with ts-node if available
-                TS_SRC=$(find "$REPO_ROOT/src" -name "server.ts" 2>/dev/null | head -1)
-                TSNODE="$REPO_ROOT/node_modules/.bin/ts-node"
-                if [ -n "$TS_SRC" ] && [ -f "$TSNODE" ]; then
-                    echo "[start.sh] Running TypeScript directly via ts-node: $TS_SRC"
-                    "$NODE_BIN" "$TSNODE" "$TS_SRC" &
-                    BGUTIL_PID=$!
-                    READY=0
-                    for i in $(seq 1 15); do
-                        sleep 1
-                        if ! kill -0 $BGUTIL_PID 2>/dev/null; then
-                            echo "[start.sh] ERROR: ts-node server died after ${i}s"
-                            break
-                        fi
-                        if (echo > /dev/tcp/localhost/4416) 2>/dev/null; then
-                            echo "[start.sh] ✅ bgutil server ready on port 4416 via ts-node (${i}s)"
-                            READY=1
-                            break
-                        fi
-                    done
-                    [ $READY -eq 0 ] && echo "[start.sh] WARNING: bgutil not responding after 15s"
-                    exec python -m uvicorn backend.main:app --host 0.0.0.0 --port "$PORT"
-                fi
-            fi
+if [ ! -f "$MAIN_JS" ]; then
+    echo "[start.sh] Installing dependencies and compiling TypeScript..."
+    (
+        cd "$REPO_SERVER_DIR"
+        # NODE_ENV=development ensures devDependencies (typescript) are installed
+        NODE_ENV=development "$NPM_BIN" install 2>&1
+        # Use the locally-installed tsc — NOT npx (which ignores node_modules/.bin)
+        LOCAL_TSC="$REPO_SERVER_DIR/node_modules/.bin/tsc"
+        if [ -f "$LOCAL_TSC" ]; then
+            echo "[start.sh] Compiling TypeScript with local tsc..."
+            "$NODE_BIN" "$LOCAL_TSC" 2>&1
         else
-            echo "[start.sh] No package.json in repo - listing all files:"
-            find "$GH_DIR" -not -path "*/.git/*" -type f 2>/dev/null | head -30
+            echo "[start.sh] ERROR: tsc not found in node_modules/.bin"
+            ls node_modules/.bin/ 2>/dev/null | grep -i tsc || true
         fi
-    fi
+    )
 fi
 
-# ── 4. Start bgutil server if found ───────────────────────────────────────
-if [ -n "$SERVER_JS" ]; then
-    echo "[start.sh] Starting bgutil server: $SERVER_JS"
-    "$NODE_BIN" "$SERVER_JS" &
+# ── 3. Start bgutil server ─────────────────────────────────────────────────
+if [ -f "$MAIN_JS" ]; then
+    echo "[start.sh] Starting bgutil server: $MAIN_JS"
+    (cd "$REPO_SERVER_DIR" && "$NODE_BIN" "$MAIN_JS") &
     BGUTIL_PID=$!
 
     READY=0
@@ -126,8 +69,10 @@ if [ -n "$SERVER_JS" ]; then
     done
     [ $READY -eq 0 ] && echo "[start.sh] WARNING: bgutil not responding on port 4416 after 15s"
 else
-    echo "[start.sh] ERROR: Could not locate bgutil server.js"
+    echo "[start.sh] ERROR: Could not build or locate bgutil main.js"
+    echo "[start.sh] Contents of $REPO_SERVER_DIR:"
+    ls "$REPO_SERVER_DIR/" 2>/dev/null
 fi
 
-# ── 5. Start Python application ────────────────────────────────────────────
+# ── 4. Start Python application ────────────────────────────────────────────
 exec python -m uvicorn backend.main:app --host 0.0.0.0 --port "$PORT"
