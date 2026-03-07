@@ -313,102 +313,144 @@ async def download_instagram_video_fallback(url: str) -> tuple[Path, str]:
 # YOUTUBE FALLBACK via INVIDIOUS API (no IP restrictions, no auth needed)
 # ============================================================================
 
-# Public Invidious instances — tried in order, first success wins.
-# These are community-run mirrors of YouTube that proxy requests through their
-# own servers, bypassing cloud-IP blocks entirely.
+# Public Invidious instances — tried in order, first valid JSON response wins.
+# These are community-run mirrors; some may be slow or return empty bodies.
 _INVIDIOUS_INSTANCES = [
-    "https://invidious.io.lol",
+    "https://inv.nadeko.net",
+    "https://invidious.reallyaweso.me",
+    "https://yt.cdaut.de",
     "https://invidious.privacydev.net",
-    "https://iv.datura.network",
+    "https://invidious.io.lol",
     "https://invidious.nerdvpn.de",
+    "https://iv.datura.network",
     "https://invidious.slipfox.xyz",
+    "https://invidious.flossboxin.org.in",
 ]
+
+
+async def _get_invidious_instances() -> list[str]:
+    """Fetch live Invidious instance list from the official API, fall back to static list."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://api.invidious.io/instances.json?pretty=1&sort_by=health")
+            if resp.status_code == 200 and resp.content:
+                data = resp.json()
+                # data is [[host, {...}], ...] — filter for https instances with api=True
+                instances = [
+                    f"https://{item[0]}"
+                    for item in data
+                    if isinstance(item, list)
+                    and isinstance(item[1], dict)
+                    and item[1].get("api") is True
+                    and item[1].get("uri", "").startswith("https")
+                ][:10]
+                if instances:
+                    logger.debug(f"Got {len(instances)} live Invidious instances from API")
+                    return instances
+    except Exception as e:
+        logger.debug(f"Invidious instance API fetch failed: {e}")
+    return _INVIDIOUS_INSTANCES
 
 
 def _yt_video_id(url: str) -> Optional[str]:
     """Extract YouTube video ID from any YouTube URL format."""
-    patterns = [
-        r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
+    m = re.search(r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
 
 
 async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
     """
     Extract YouTube metadata via the Invidious public API.
     Works from any IP including cloud/datacenter — no auth required.
-    Tries multiple Invidious instances until one succeeds.
+    Tries multiple Invidious instances until one returns valid data.
     """
     video_id = _yt_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract video ID from URL: {url}")
 
+    instances = await _get_invidious_instances()
     last_error: Exception = RuntimeError("No Invidious instances available")
 
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        for instance in _INVIDIOUS_INSTANCES:
+    async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+        for instance in instances:
             api_url = f"{instance}/api/v1/videos/{video_id}"
             try:
                 resp = await client.get(api_url)
+
+                # Some instances return 200 with empty body or HTML — skip them
                 if resp.status_code != 200:
-                    logger.debug(f"Invidious {instance} returned {resp.status_code}")
+                    logger.debug(f"Invidious {instance} returned HTTP {resp.status_code}")
                     continue
-                data = resp.json()
+                if not resp.content:
+                    logger.debug(f"Invidious {instance} returned empty body")
+                    continue
+                content_type = resp.headers.get("content-type", "")
+                if "html" in content_type:
+                    logger.debug(f"Invidious {instance} returned HTML (probably a captcha/redirect page)")
+                    continue
+
+                try:
+                    data = resp.json()
+                except Exception as je:
+                    logger.debug(f"Invidious {instance} JSON parse failed: {je} | body: {resp.text[:120]}")
+                    continue
+
+                # Some instances return a JSON error object
+                if "error" in data:
+                    logger.debug(f"Invidious {instance} API error: {data['error']}")
+                    continue
+
+                # Must have at least a title to be useful
+                if not data.get("title"):
+                    logger.debug(f"Invidious {instance} response missing title field")
+                    continue
 
                 formats: list[VideoFormat] = []
 
-                # Combined video+audio streams (adaptiveFormats with both)
                 for f in data.get("adaptiveFormats", []):
                     mime = f.get("type", "")
-                    if "video" not in mime and "audio" not in mime:
-                        continue
                     is_video = "video" in mime
                     is_audio = "audio" in mime
+                    if not is_video and not is_audio:
+                        continue
                     ext = mime.split("/")[1].split(";")[0] if "/" in mime else "mp4"
                     formats.append(VideoFormat(
-                        format_id=f.get("itag", ""),
+                        format_id=str(f.get("itag", "")),
                         resolution=f.get("qualityLabel") or ("audio" if is_audio and not is_video else "video"),
                         ext=ext,
-                        filesize=f.get("contentLength") and int(f["contentLength"]),
+                        filesize=int(f["contentLength"]) if f.get("contentLength") else None,
                         vcodec=f.get("encoding") if is_video else None,
                         acodec=f.get("encoding") if is_audio and not is_video else None,
-                        height=f.get("resolution") and int(str(f["resolution"]).rstrip("p")) if f.get("resolution") else None,
+                        height=int(str(f["resolution"]).rstrip("p")) if f.get("resolution") else None,
                         abr=f"{f['bitrate'] // 1000}k" if f.get("bitrate") and not is_video else None,
                     ))
 
-                # Progressive "formatStreams" (video+audio muxed)
                 for f in data.get("formatStreams", []):
                     mime = f.get("type", "")
                     ext = mime.split("/")[1].split(";")[0] if "/" in mime else "mp4"
                     qlabel = f.get("qualityLabel", "")
                     height = None
-                    if qlabel.endswith("p"):
-                        try:
-                            height = int(qlabel.rstrip("p"))
-                        except ValueError:
-                            pass
+                    try:
+                        height = int(qlabel.rstrip("p")) if qlabel.endswith("p") else None
+                    except ValueError:
+                        pass
                     formats.append(VideoFormat(
-                        format_id=f.get("itag", ""),
+                        format_id=str(f.get("itag", "")),
                         resolution=qlabel or "unknown",
                         ext=ext,
-                        filesize=f.get("contentLength") and int(f["contentLength"]),
+                        filesize=int(f["contentLength"]) if f.get("contentLength") else None,
                         vcodec=f.get("encoding"),
                         acodec="mp4a",
                         height=height,
                     ))
 
-                # Best thumbnail
                 thumbs = data.get("videoThumbnails", [])
                 thumbnail = next(
                     (t["url"] for t in thumbs if t.get("quality") in ("maxres", "high")),
                     thumbs[0]["url"] if thumbs else None,
                 )
 
-                logger.info(f"Invidious {instance} succeeded for {video_id}")
+                logger.info(f"Invidious {instance} succeeded for {video_id} ({len(formats)} formats)")
                 return VideoMetadata(
                     title=data.get("title", "YouTube Video"),
                     thumbnail=thumbnail,
