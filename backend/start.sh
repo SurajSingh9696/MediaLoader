@@ -63,10 +63,11 @@ if [ -z "$SERVER_JS" ]; then
             REPO_ROOT=$(dirname "$REPO_PKG")
             echo "[start.sh] npm install in: $REPO_ROOT"
             (cd "$REPO_ROOT" && "$NPM_BIN" install 2>&1)
-            # Compile TypeScript with npx tsc (no "build" script needed)
-            if [ -f "$REPO_ROOT/tsconfig.json" ]; then
-                echo "[start.sh] Compiling TypeScript with npx tsc..."
-                (cd "$REPO_ROOT" && "$NODE_DIR/npx" tsc 2>&1) || true
+            # Compile TypeScript using the locally-installed tsc (NOT npx/global)
+            LOCAL_TSC="$REPO_ROOT/node_modules/.bin/tsc"
+            if [ -f "$REPO_ROOT/tsconfig.json" ] && [ -f "$LOCAL_TSC" ]; then
+                echo "[start.sh] Compiling TypeScript with local tsc..."
+                (cd "$REPO_ROOT" && "$NODE_BIN" "$LOCAL_TSC" 2>&1) || true
             fi
             # Find compiled server.js outside node_modules
             SERVER_JS=$(find "$REPO_ROOT" -name "server.js" -not -path "*/node_modules/*" 2>/dev/null | head -1)
