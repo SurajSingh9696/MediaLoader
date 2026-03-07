@@ -62,14 +62,41 @@ if [ -z "$SERVER_JS" ]; then
         if [ -n "$REPO_PKG" ]; then
             REPO_ROOT=$(dirname "$REPO_PKG")
             echo "[start.sh] npm install in: $REPO_ROOT"
-            (cd "$REPO_ROOT" && "$NPM_BIN" install --production 2>&1)
-            # Build TypeScript if dist doesn't exist
-            if [ -f "$REPO_ROOT/tsconfig.json" ] && [ ! -d "$REPO_ROOT/dist" ]; then
-                echo "[start.sh] Building TypeScript..."
-                (cd "$REPO_ROOT" && "$NPM_BIN" run build 2>&1) || true
+            (cd "$REPO_ROOT" && "$NPM_BIN" install 2>&1)
+            # Compile TypeScript with npx tsc (no "build" script needed)
+            if [ -f "$REPO_ROOT/tsconfig.json" ]; then
+                echo "[start.sh] Compiling TypeScript with npx tsc..."
+                (cd "$REPO_ROOT" && "$NODE_DIR/npx" tsc 2>&1) || true
             fi
+            # Find compiled server.js outside node_modules
             SERVER_JS=$(find "$REPO_ROOT" -name "server.js" -not -path "*/node_modules/*" 2>/dev/null | head -1)
-            [ -n "$SERVER_JS" ] && echo "[start.sh] GitHub server.js: $SERVER_JS"
+            if [ -n "$SERVER_JS" ]; then
+                echo "[start.sh] GitHub server.js: $SERVER_JS"
+            else
+                # Fallback: run TypeScript directly with ts-node if available
+                TS_SRC=$(find "$REPO_ROOT/src" -name "server.ts" 2>/dev/null | head -1)
+                TSNODE="$REPO_ROOT/node_modules/.bin/ts-node"
+                if [ -n "$TS_SRC" ] && [ -f "$TSNODE" ]; then
+                    echo "[start.sh] Running TypeScript directly via ts-node: $TS_SRC"
+                    "$NODE_BIN" "$TSNODE" "$TS_SRC" &
+                    BGUTIL_PID=$!
+                    READY=0
+                    for i in $(seq 1 15); do
+                        sleep 1
+                        if ! kill -0 $BGUTIL_PID 2>/dev/null; then
+                            echo "[start.sh] ERROR: ts-node server died after ${i}s"
+                            break
+                        fi
+                        if (echo > /dev/tcp/localhost/4416) 2>/dev/null; then
+                            echo "[start.sh] ✅ bgutil server ready on port 4416 via ts-node (${i}s)"
+                            READY=1
+                            break
+                        fi
+                    done
+                    [ $READY -eq 0 ] && echo "[start.sh] WARNING: bgutil not responding after 15s"
+                    exec python -m uvicorn backend.main:app --host 0.0.0.0 --port "$PORT"
+                fi
+            fi
         else
             echo "[start.sh] No package.json in repo - listing all files:"
             find "$GH_DIR" -not -path "*/.git/*" -type f 2>/dev/null | head -30
