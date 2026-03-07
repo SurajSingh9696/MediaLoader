@@ -26,19 +26,30 @@ except ImportError:
     FALLBACK_AVAILABLE = False
     logger.warning("Fallback extractors not available. Install pytubefix and instaloader for fallback support.")
 
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
-
-# Find Node.js path and add to environment for yt-dlp subprocess
+# Configure PATH for Node.js BEFORE creating executor
+# This must happen at module level to ensure subprocesses inherit it
 _node_path = shutil.which("node")
 if _node_path:
-    logger.info(f"Found Node.js at: {_node_path}")
-    # Ensure Node.js directory is in PATH for yt-dlp subprocesses
     node_dir = str(Path(_node_path).parent)
-    if node_dir not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = f"{node_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-        logger.info(f"Added Node.js directory to PATH: {node_dir}")
+    current_path = os.environ.get("PATH", "")
+    if node_dir not in current_path:
+        os.environ["PATH"] = f"{node_dir}{os.pathsep}{current_path}"
+        print(f"[ytdlp_service] Added Node.js to PATH: {node_dir}", flush=True)
+    print(f"[ytdlp_service] Node.js available at: {_node_path}", flush=True)
+    
+    # Test if node actually works
+    try:
+        result = subprocess.run([_node_path, "--version"], capture_output=True, text=True, timeout=2)
+        if result.returncode == 0:
+            print(f"[ytdlp_service] Node.js test successful: {result.stdout.strip()}", flush=True)
+        else:
+            print(f"[ytdlp_service] Node.js test failed: {result.stderr}", flush=True)
+    except Exception as e:
+        print(f"[ytdlp_service] Node.js test error: {e}", flush=True)
 else:
-    logger.warning("Node.js not found in PATH - PO token generation will be unavailable")
+    print("[ytdlp_service] WARNING: Node.js not found - PO tokens unavailable", flush=True)
+
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
 
 # Resolve the bundled FFmpeg binary (works without a system-level install).
 # Pass the full exe path — yt-dlp accepts either a directory or a direct path,
@@ -166,7 +177,8 @@ def _base_ydl_opts() -> dict:
         # Platform-specific extractor arguments for robustness
         "extractor_args": {
             "youtube": {
-                "po_token": ["web"],  # Enable PO token generation using available JS runtime
+                # Let yt-dlp auto-detect and use available JS runtime for PO tokens
+                # Don't explicitly specify providers - auto-detection works better
             },
             "instagram": {
                 "api": ["graphql", "web"],  # Use multiple API endpoints
