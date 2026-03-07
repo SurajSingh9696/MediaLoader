@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import socket
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -48,6 +49,14 @@ async def startup_event():
     else:
         logger.warning(f"⚠️  No JavaScript runtime detected. YouTube PO Token generation unavailable.")
         logger.warning(f"   Install Node.js to enable: curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs")
+
+    # Check if bgutil PO token server is running on port 4416
+    try:
+        with socket.create_connection(("localhost", 4416), timeout=1):
+            logger.info("✅ bgutil PO token server is running on port 4416 (YouTube PO tokens enabled)")
+    except (ConnectionRefusedError, OSError):
+        logger.warning("⚠️  bgutil PO token server not running on port 4416 - YouTube PO tokens unavailable")
+        logger.warning("   Ensure start.sh started the bgutil server before Python")
     
     # Check if fallback extractors are available
     try:
