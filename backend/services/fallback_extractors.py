@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from backend.core.config import settings
 from backend.models.schemas import VideoMetadata, VideoFormat
 
@@ -305,3 +307,126 @@ async def download_instagram_video_fallback(url: str) -> tuple[Path, str]:
     except Exception as exc:
         logger.error(f"instaloader download fallback failed: {exc}")
         raise
+
+
+# ============================================================================
+# YOUTUBE FALLBACK via INVIDIOUS API (no IP restrictions, no auth needed)
+# ============================================================================
+
+# Public Invidious instances — tried in order, first success wins.
+# These are community-run mirrors of YouTube that proxy requests through their
+# own servers, bypassing cloud-IP blocks entirely.
+_INVIDIOUS_INSTANCES = [
+    "https://invidious.io.lol",
+    "https://invidious.privacydev.net",
+    "https://iv.datura.network",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.slipfox.xyz",
+]
+
+
+def _yt_video_id(url: str) -> Optional[str]:
+    """Extract YouTube video ID from any YouTube URL format."""
+    patterns = [
+        r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
+    """
+    Extract YouTube metadata via the Invidious public API.
+    Works from any IP including cloud/datacenter — no auth required.
+    Tries multiple Invidious instances until one succeeds.
+    """
+    video_id = _yt_video_id(url)
+    if not video_id:
+        raise ValueError(f"Could not extract video ID from URL: {url}")
+
+    last_error: Exception = RuntimeError("No Invidious instances available")
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        for instance in _INVIDIOUS_INSTANCES:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            try:
+                resp = await client.get(api_url)
+                if resp.status_code != 200:
+                    logger.debug(f"Invidious {instance} returned {resp.status_code}")
+                    continue
+                data = resp.json()
+
+                formats: list[VideoFormat] = []
+
+                # Combined video+audio streams (adaptiveFormats with both)
+                for f in data.get("adaptiveFormats", []):
+                    mime = f.get("type", "")
+                    if "video" not in mime and "audio" not in mime:
+                        continue
+                    is_video = "video" in mime
+                    is_audio = "audio" in mime
+                    ext = mime.split("/")[1].split(";")[0] if "/" in mime else "mp4"
+                    formats.append(VideoFormat(
+                        format_id=f.get("itag", ""),
+                        resolution=f.get("qualityLabel") or ("audio" if is_audio and not is_video else "video"),
+                        ext=ext,
+                        filesize=f.get("contentLength") and int(f["contentLength"]),
+                        vcodec=f.get("encoding") if is_video else None,
+                        acodec=f.get("encoding") if is_audio and not is_video else None,
+                        height=f.get("resolution") and int(str(f["resolution"]).rstrip("p")) if f.get("resolution") else None,
+                        abr=f"{f['bitrate'] // 1000}k" if f.get("bitrate") and not is_video else None,
+                    ))
+
+                # Progressive "formatStreams" (video+audio muxed)
+                for f in data.get("formatStreams", []):
+                    mime = f.get("type", "")
+                    ext = mime.split("/")[1].split(";")[0] if "/" in mime else "mp4"
+                    qlabel = f.get("qualityLabel", "")
+                    height = None
+                    if qlabel.endswith("p"):
+                        try:
+                            height = int(qlabel.rstrip("p"))
+                        except ValueError:
+                            pass
+                    formats.append(VideoFormat(
+                        format_id=f.get("itag", ""),
+                        resolution=qlabel or "unknown",
+                        ext=ext,
+                        filesize=f.get("contentLength") and int(f["contentLength"]),
+                        vcodec=f.get("encoding"),
+                        acodec="mp4a",
+                        height=height,
+                    ))
+
+                # Best thumbnail
+                thumbs = data.get("videoThumbnails", [])
+                thumbnail = next(
+                    (t["url"] for t in thumbs if t.get("quality") in ("maxres", "high")),
+                    thumbs[0]["url"] if thumbs else None,
+                )
+
+                logger.info(f"Invidious {instance} succeeded for {video_id}")
+                return VideoMetadata(
+                    title=data.get("title", "YouTube Video"),
+                    thumbnail=thumbnail,
+                    duration=data.get("lengthSeconds"),
+                    uploader=data.get("author"),
+                    platform="YouTube",
+                    url=url,
+                    formats=formats,
+                    description=(data.get("description") or "")[:400] or None,
+                    view_count=data.get("viewCount"),
+                )
+
+            except httpx.TimeoutException:
+                logger.debug(f"Invidious {instance} timed out")
+                last_error = TimeoutError(f"{instance} timed out")
+            except Exception as exc:
+                logger.debug(f"Invidious {instance} error: {exc}")
+                last_error = exc
+
+    raise RuntimeError(f"All Invidious instances failed. Last error: {last_error}")
+

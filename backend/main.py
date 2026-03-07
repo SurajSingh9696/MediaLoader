@@ -65,19 +65,29 @@ async def startup_event():
     if bgutil_running:
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                # bgutil exposes POST /token — probe it with an empty body to check it responds
-                resp = await client.post("http://localhost:4416/token", json={})
-                logger.info(f"bgutil /token probe: HTTP {resp.status_code} — {resp.text[:200]}")
+                # bgutil has no root route; probe /get_pot to verify it's the right server
+                resp = await client.post("http://localhost:4416/get_pot", json={})
+                logger.info(f"bgutil /get_pot probe: HTTP {resp.status_code}")
         except Exception as e:
-            logger.warning(f"bgutil /token probe failed: {e}")
+            logger.warning(f"bgutil probe failed: {e}")
 
-    # Cookie status for YouTube
-    if os.environ.get("YOUTUBE_COOKIES"):
-        logger.info("✅ YOUTUBE_COOKIES env var set — YouTube session cookies will be used (bypasses IP blocks)")
+    # YouTube authentication status
+    if os.environ.get("YOUTUBE_OAUTH2_TOKEN"):
+        logger.info("✅ YOUTUBE_OAUTH2_TOKEN set — OAuth2 auth enabled (works from any IP)")
+    elif os.environ.get("YOUTUBE_COOKIES"):
+        logger.warning("⚠️  Using YOUTUBE_COOKIES (session cookies). May still fail on cloud IPs.")
+        logger.warning("   For reliable YouTube support, use YOUTUBE_OAUTH2_TOKEN instead.")
     else:
-        logger.warning("⚠️  YOUTUBE_COOKIES not set — YouTube will likely fail on cloud IPs (Render/AWS)")
-        logger.warning("   Fix: export cookies from a YouTube-logged-in browser, then:")
-        logger.warning("   base64 -w0 cookies.txt | copy output → set as YOUTUBE_COOKIES in Render env vars")
+        logger.warning("⚠️  No YouTube auth configured — YouTube WILL fail on Render/AWS IPs")
+        logger.warning("   Fix (one-time setup):")
+        logger.warning("   1. pip install yt-dlp yt-dlp-youtube-oauth2")
+        logger.warning("   2. yt-dlp --username oauth2 --password '' https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        logger.warning("   3. Visit the device-auth URL shown, sign in with Google")
+        logger.warning("   4. Find token: %AppData%\\yt-dlp\\youtube-oauth2\\token.json (Windows)")
+        logger.warning("   5. Base64-encode: [Convert]::ToBase64String([IO.File]::ReadAllBytes('token.json'))")
+        logger.warning("   6. Set YOUTUBE_OAUTH2_TOKEN env var in Render dashboard")
+    if os.environ.get("YOUTUBE_PROXY"):
+        logger.info("✅ YOUTUBE_PROXY configured")
     
     # Check if fallback extractors are available
     try:

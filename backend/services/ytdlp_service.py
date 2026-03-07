@@ -60,8 +60,49 @@ if _cookies_b64:
     except Exception as _e:
         print(f"[ytdlp_service] WARNING: Failed to decode YOUTUBE_COOKIES: {_e}", flush=True)
 else:
-    print("[ytdlp_service] INFO: No YOUTUBE_COOKIES env var — YouTube may be blocked on cloud IPs."
-          " See README for setup instructions.", flush=True)
+    print("[ytdlp_service] INFO: No YOUTUBE_COOKIES env var set.", flush=True)
+
+# ---------------------------------------------------------------------------
+# YouTube OAuth2 token (RECOMMENDED over cookies for cloud deployments).
+# OAuth2 bearer tokens are accepted by YouTube from ALL IPs — no IP blocks.
+#
+# One-time setup (run locally):
+#   pip install yt-dlp yt-dlp-youtube-oauth2
+#   yt-dlp --username oauth2 --password "" https://www.youtube.com/watch?v=dQw4w9WgXcQ
+#   (visit the device-auth URL shown, sign in with Google)
+# Then export the token file:
+#   Windows: %AppData%\yt-dlp\youtube-oauth2\token.json
+#   Linux/macOS: ~/.cache/yt-dlp/youtube-oauth2/token.json
+# Base64-encode it:
+#   PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("token.json")) | Set-Clipboard
+# Set in Render: YOUTUBE_OAUTH2_TOKEN = <base64 output>
+# ---------------------------------------------------------------------------
+_oauth2_cache_dir: Optional[str] = None
+
+_oauth2_b64 = os.environ.get("YOUTUBE_OAUTH2_TOKEN", "").strip()
+if _oauth2_b64:
+    try:
+        _token_dir = "/tmp/ytdlp-cache/youtube-oauth2"
+        os.makedirs(_token_dir, exist_ok=True)
+        Path(f"{_token_dir}/token.json").write_text(
+            base64.b64decode(_oauth2_b64).decode("utf-8")
+        )
+        _oauth2_cache_dir = "/tmp/ytdlp-cache"
+        print("[ytdlp_service] ✅ YouTube OAuth2 token loaded — will bypass IP blocks", flush=True)
+    except Exception as _e:
+        print(f"[ytdlp_service] WARNING: Failed to decode YOUTUBE_OAUTH2_TOKEN: {_e}", flush=True)
+else:
+    print("[ytdlp_service] INFO: No YOUTUBE_OAUTH2_TOKEN set.", flush=True)
+
+if not _oauth2_b64 and not _cookies_b64:
+    print("[ytdlp_service] WARNING: No YouTube auth configured. YouTube WILL fail on cloud IPs.", flush=True)
+    print("[ytdlp_service] Recommended fix: set YOUTUBE_OAUTH2_TOKEN (see instructions above)", flush=True)
+
+# Optional proxy for YouTube requests (e.g. residential proxy to avoid IP blocks)
+# Format: http://user:pass@host:port or socks5://host:port
+_youtube_proxy: Optional[str] = os.environ.get("YOUTUBE_PROXY", "").strip() or None
+if _youtube_proxy:
+    print(f"[ytdlp_service] YouTube proxy configured", flush=True)
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
 
@@ -221,10 +262,17 @@ def _base_ydl_opts() -> dict:
         opts["js_runtimes"] = {"node": {}}
     if _ffmpeg_exe:
         opts["ffmpeg_location"] = _ffmpeg_exe
-    # YouTube cookies bypass cloud-IP bot detection — attach to all requests
-    # (yt-dlp only sends cookies to matching domains, so other platforms are unaffected)
-    if _youtube_cookie_file:
+    # YouTube cookies — only used if OAuth2 is not configured
+    if _youtube_cookie_file and not _oauth2_cache_dir:
         opts["cookiefile"] = _youtube_cookie_file
+    # OAuth2 authentication — overrides cookies, works from any IP
+    if _oauth2_cache_dir:
+        opts["cachedir"] = _oauth2_cache_dir
+        opts["username"] = "oauth2"
+        opts["password"] = ""
+    # Proxy for YouTube (residential proxies bypass cloud-IP blocks)
+    if _youtube_proxy:
+        opts["proxy"] = _youtube_proxy
     return opts
 
 
@@ -235,39 +283,52 @@ async def get_metadata(url: str) -> VideoMetadata:
     """
     loop = asyncio.get_running_loop()
     
-    # Strategies tried in order. On cloud IPs (Render/AWS) YouTube blocks all
-    # InnerTube clients regardless of PO tokens unless session cookies are
-    # provided via the YOUTUBE_COOKIES env var. Setting that var makes strategy
-    # 1 succeed immediately; without it the strategies exhaust quickly and the
-    # error message instructs the user on how to set up cookies.
-    strategies = [
-        # Strategy 1: ios + web — standard path; works when cookies are present
-        {
-            "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
-            "socket_timeout": 15,
-        },
-        # Strategy 2: android_vr — no PO token required, sometimes bypasses block
-        {
-            "extractor_args": {"youtube": {"player_client": ["android_vr", "android"]}},
-            "socket_timeout": 15,
-        },
-        # Strategy 3: tv_embedded + mediaconnect — TV clients with less bot detection
-        {
-            "extractor_args": {"youtube": {"player_client": ["tv_embedded", "mediaconnect"]}},
-            "socket_timeout": 15,
-        },
-        # Strategy 4: mweb — mobile web, sometimes lower IP restrictions
-        {
-            "extractor_args": {"youtube": {"player_client": ["mweb"]}},
-            "socket_timeout": 15,
-        },
-        # Strategy 5: yt-dlp default clients, verbose for diagnostics
-        {
-            "quiet": False,
-            "verbose": True,
-            "socket_timeout": 20,
-        },
-    ]
+    # Strategy selection depends on auth method:
+    # - OAuth2: web client with bearer token works from any IP
+    # - Cookies only: try multiple clients hoping one bypasses the IP block
+    # - Neither: all will fail on cloud IPs; keep strategies minimal to fail fast
+    if _oauth2_cache_dir:
+        strategies = [
+            # OAuth2: web is the primary authenticated client
+            {
+                "extractor_args": {"youtube": {"player_client": ["web"]}},
+                "socket_timeout": 20,
+            },
+            # OAuth2 fallback: let yt-dlp pick the default clients
+            {
+                "socket_timeout": 20,
+            },
+            # Verbose for diagnostics if above fail
+            {
+                "quiet": False,
+                "verbose": True,
+                "socket_timeout": 20,
+            },
+        ]
+    else:
+        strategies = [
+            # Strategy 1: android_vr — historically doesn't need PO tokens
+            {
+                "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
+                "socket_timeout": 15,
+            },
+            # Strategy 2: tv_embedded — TV client, less aggressive bot detection
+            {
+                "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
+                "socket_timeout": 15,
+            },
+            # Strategy 3: ios — Apple client, different auth path
+            {
+                "extractor_args": {"youtube": {"player_client": ["ios"]}},
+                "socket_timeout": 15,
+            },
+            # Strategy 4: verbose default — diagnostics
+            {
+                "quiet": False,
+                "verbose": True,
+                "socket_timeout": 20,
+            },
+        ]
     
     last_exception = None
     is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
@@ -311,12 +372,17 @@ async def get_metadata(url: str) -> VideoMetadata:
                     logger.warning(f"All yt-dlp strategies failed for YouTube URL, trying pytubefix fallback...")
                     try:
                         return await fallback_extractors.get_youtube_metadata_fallback(url)
-                    except Exception as fallback_exc:
-                        error_msg = str(fallback_exc).lower()
+                    except Exception as pytubefix_exc:
+                        error_msg = str(pytubefix_exc).lower()
                         if "po token" in error_msg or "detected as a bot" in error_msg:
-                            logger.error(f"Both yt-dlp and pytubefix blocked by YouTube bot detection. This video requires PO tokens. Try a different YouTube video or use another platform.")
+                            logger.warning("pytubefix also blocked. Trying Invidious API fallback...")
                         else:
-                            logger.error(f"YouTube fallback also failed: {fallback_exc}")
+                            logger.warning(f"pytubefix failed ({pytubefix_exc}). Trying Invidious API fallback...")
+                    # Invidious: works from any IP, no auth required
+                    try:
+                        return await fallback_extractors.get_youtube_metadata_invidious(url)
+                    except Exception as inv_exc:
+                        logger.error(f"All YouTube fallbacks failed. Invidious: {inv_exc}")
                 elif is_instagram:
                     logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
                     try:
@@ -337,12 +403,17 @@ async def get_metadata(url: str) -> VideoMetadata:
                     logger.warning(f"All yt-dlp strategies failed for YouTube URL, trying pytubefix fallback...")
                     try:
                         return await fallback_extractors.get_youtube_metadata_fallback(url)
-                    except Exception as fallback_exc:
-                        error_msg = str(fallback_exc).lower()
+                    except Exception as pytubefix_exc:
+                        error_msg = str(pytubefix_exc).lower()
                         if "po token" in error_msg or "detected as a bot" in error_msg:
-                            logger.error(f"Both yt-dlp and pytubefix blocked by YouTube bot detection. This video requires PO tokens. Try a different YouTube video or use another platform.")
+                            logger.warning("pytubefix also blocked. Trying Invidious API fallback...")
                         else:
-                            logger.error(f"YouTube fallback also failed: {fallback_exc}")
+                            logger.warning(f"pytubefix failed ({pytubefix_exc}). Trying Invidious API fallback...")
+                    # Invidious: works from any IP, no auth required
+                    try:
+                        return await fallback_extractors.get_youtube_metadata_invidious(url)
+                    except Exception as inv_exc:
+                        logger.error(f"All YouTube fallbacks failed. Invidious: {inv_exc}")
                 elif is_instagram:
                     logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
                     try:
