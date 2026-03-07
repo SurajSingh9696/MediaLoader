@@ -141,10 +141,6 @@ def _base_ydl_opts() -> dict:
         },
         # Platform-specific extractor arguments for robustness
         "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "android", "web"],
-                "player_skip": ["configs"],
-            },
             "instagram": {
                 "api": ["graphql", "web"],  # Use multiple API endpoints
             },
@@ -170,37 +166,69 @@ def _base_ydl_opts() -> dict:
 
 async def get_metadata(url: str) -> VideoMetadata:
     """
-    Extract video metadata with fallback retry mechanism for YouTube.
-    Tries different player clients if the first attempt fails.
+    Extract video metadata with aggressive fallback retry mechanism for YouTube.
+    Tries different player clients and extraction methods if attempts fail.
     """
     loop = asyncio.get_running_loop()
     
-    # Define multiple configuration strategies
+    # Define multiple configuration strategies with increasing aggressiveness
     strategies = [
-        # Strategy 1: iOS client (most reliable)
-        {"player_client": ["ios", "android", "web"]},
-        # Strategy 2: Android only
-        {"player_client": ["android"]},
-        # Strategy 3: Web client with mobile API
-        {"player_client": ["mweb", "web"]},
-        # Strategy 4: No extractor args (default behavior)
-        {},
+        # Strategy 1: iOS client (most reliable, bypasses most restrictions)
+        {
+            "extractor_args": {"youtube": {"player_client": ["ios"]}},
+            "age_limit": None,
+        },
+        # Strategy 2: Android TV client (often bypasses bot detection)
+        {
+            "extractor_args": {"youtube": {"player_client": ["android_testsuite", "android"]}},
+            "age_limit": None,
+        },
+        # Strategy 3: Android with embedded player
+        {
+            "extractor_args": {"youtube": {"player_client": ["android_embedded", "android"]}},
+            "age_limit": None,
+        },
+        # Strategy 4: Media Connect (smart TV client)
+        {
+            "extractor_args": {"youtube": {"player_client": ["mediaconnect", "android"]}},
+            "age_limit": None,
+        },
+        # Strategy 5: TV embedded
+        {
+            "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
+            "age_limit": None,
+        },
+        # Strategy 6: Mobile web
+        {
+            "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+            "age_limit": None,
+        },
+        # Strategy 7: Web with all bypasses
+        {
+            "extractor_args": {"youtube": {"player_client": ["web"], "skip": ["webpage"]}},
+            "age_limit": None,
+            "nocheckcertificate": True,
+        },
+        # Strategy 8: Default with certificate bypass
+        {
+            "nocheckcertificate": True,
+            "age_limit": None,
+        },
     ]
     
     last_exception = None
+    is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
     
-    for strategy_idx, extractor_override in enumerate(strategies):
+    # For non-YouTube URLs, just use default config
+    if not is_youtube:
+        strategies = [{}]
+    
+    for strategy_idx, strategy_config in enumerate(strategies):
         opts = {
             **_base_ydl_opts(),
             "skip_download": True,
+            **strategy_config,
         }
-        
-        # Override YouTube extractor args for this strategy
-        if extractor_override and "youtube" in url.lower():
-            opts["extractor_args"] = {
-                **opts.get("extractor_args", {}),
-                "youtube": extractor_override
-            }
         
         def _extract() -> dict:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -211,13 +239,16 @@ async def get_metadata(url: str) -> VideoMetadata:
         
         try:
             info = await loop.run_in_executor(_executor, _extract)
+            if strategy_idx > 0:
+                logger.info(f"Successfully extracted metadata using strategy {strategy_idx + 1}")
             break  # Success, exit the retry loop
         except (DownloadError, ExtractorError) as exc:
             last_exception = exc
             # If this is not the last strategy, try the next one
             if strategy_idx < len(strategies) - 1:
                 logger.warning(f"Extraction attempt {strategy_idx + 1} failed for {url}, trying alternative method...")
-                await asyncio.sleep(0.5)  # Brief delay between retries
+                # Exponential backoff: 1s, 2s, 3s delays
+                await asyncio.sleep(min(strategy_idx + 1, 3))
                 continue
             # If this was the last strategy, raise the exception
             raise exc
@@ -225,7 +256,7 @@ async def get_metadata(url: str) -> VideoMetadata:
             last_exception = exc
             if strategy_idx < len(strategies) - 1:
                 logger.warning(f"Extraction attempt {strategy_idx + 1} failed for {url}, trying alternative method...")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(min(strategy_idx + 1, 3))
                 continue
             raise exc
     
