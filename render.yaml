@@ -5,11 +5,7 @@ services:
     region: oregon
     plan: free
     rootDir: .
-    buildCommand: |
-      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-      apt-get install -y nodejs
-      pip install -r backend/requirements.txt
-      npm install --prefix /opt/render/project/src/bgutil @yt-dlp/bgutil-ytdlp-pot-provider
+    buildCommand: pip install -r backend/requirements.txt
     startCommand: bash backend/start.sh
     envVars:
       - key: TEMP_DOWNLOAD_DIR
