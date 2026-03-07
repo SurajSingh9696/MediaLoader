@@ -65,11 +65,11 @@ async def startup_event():
     if bgutil_running:
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                # Try the root endpoint to see server info
-                root_resp = await client.get("http://localhost:4416/")
-                logger.info(f"bgutil server info: {root_resp.text[:300]}")
+                # bgutil exposes POST /token — probe it with an empty body to check it responds
+                resp = await client.post("http://localhost:4416/token", json={})
+                logger.info(f"bgutil /token probe: HTTP {resp.status_code} — {resp.text[:200]}")
         except Exception as e:
-            logger.warning(f"bgutil server root check failed: {e}")
+            logger.warning(f"bgutil /token probe failed: {e}")
 
     # Cookie status for YouTube
     if os.environ.get("YOUTUBE_COOKIES"):
