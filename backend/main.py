@@ -65,11 +65,16 @@ async def startup_event():
     if bgutil_running:
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                # bgutil has no root route; probe /get_pot to verify it's the right server
+                # bgutil /get_pot with an empty body returns 4xx but proves the server is live.
+                # A connection error (not an HTTP error) means it's still starting up.
                 resp = await client.post("http://localhost:4416/get_pot", json={})
-                logger.info(f"bgutil /get_pot probe: HTTP {resp.status_code}")
+                logger.info(f"bgutil /get_pot probe: HTTP {resp.status_code} — server is alive")
+        except httpx.ConnectError:
+            logger.warning("bgutil probe failed: connection refused — server may still be initializing")
+        except httpx.TimeoutException:
+            logger.warning("bgutil probe failed: timeout — server is slow to respond")
         except Exception as e:
-            logger.warning(f"bgutil probe failed: {e}")
+            logger.warning(f"bgutil probe failed: {type(e).__name__}: {e}")
 
     # YouTube authentication status
     if os.environ.get("YOUTUBE_OAUTH2_TOKEN"):

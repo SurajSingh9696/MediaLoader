@@ -161,9 +161,11 @@ def _classify_error(exc: Exception) -> tuple[int, str]:
     if "po token" in msg_lower or "detected as a bot" in msg_lower:
         return 403, "YouTube requires additional verification for this video. Please try a different video or wait a few minutes."
     if "failed to extract any player response" in msg_lower:
+        if _oauth2_cache_dir:
+            return 503, "YouTube is blocking this request even with OAuth2 auth. The token may be expired — regenerate it locally and update YOUTUBE_OAUTH2_TOKEN in your Render dashboard."
         if _youtube_cookie_file:
-            return 503, "YouTube is blocking this request even with session cookies. Please try again in a few moments."
-        return 503, "YouTube is blocking requests from this server's IP. To fix: set the YOUTUBE_COOKIES environment variable in your Render dashboard (see README for instructions)."
+            return 503, "YouTube is blocking requests from this server's IP even with session cookies. For reliable access, set YOUTUBE_OAUTH2_TOKEN in your Render dashboard (see README)."
+        return 503, "YouTube is blocking requests from this server's IP. Set YOUTUBE_OAUTH2_TOKEN in your Render dashboard for reliable access (see README)."
     if "sign in to confirm" in msg_lower or "confirm you're not a bot" in msg_lower:
         return 403, "Bot detection triggered. Please try again in a moment or use a different video."
     if "private video" in msg_lower or "this video is private" in msg_lower:
@@ -287,11 +289,27 @@ async def get_metadata(url: str) -> VideoMetadata:
     # - OAuth2: web client with bearer token works from any IP
     # - Cookies only: try multiple clients hoping one bypasses the IP block
     # - Neither: all will fail on cloud IPs; keep strategies minimal to fail fast
+    #
+    # NOTE: extractor_args keys must include BOTH 'youtube' (regular extractor)
+    # and 'youtube+oauth2' (yt-dlp-youtube-oauth2 plugin extractor) so that
+    # player_client overrides are respected regardless of which extractor is active.
+    def _yt_client_args(client: list) -> dict:
+        """Return extractor_args targeting both youtube and youtube+oauth2."""
+        return {
+            "youtube": {"player_client": client},
+            "youtube+oauth2": {"player_client": client},
+        }
+
     if _oauth2_cache_dir:
         strategies = [
             # OAuth2: web is the primary authenticated client
             {
-                "extractor_args": {"youtube": {"player_client": ["web"]}},
+                "extractor_args": _yt_client_args(["web"]),
+                "socket_timeout": 20,
+            },
+            # OAuth2 fallback: mweb (mobile web) sometimes bypasses extra checks
+            {
+                "extractor_args": _yt_client_args(["mweb"]),
                 "socket_timeout": 20,
             },
             # OAuth2 fallback: let yt-dlp pick the default clients
@@ -307,26 +325,36 @@ async def get_metadata(url: str) -> VideoMetadata:
         ]
     else:
         strategies = [
-            # Strategy 1: android_vr — historically doesn't need PO tokens
+            # Strategy 1: mweb — mobile web client; works well with bgutil PO tokens from cloud IPs
             {
-                "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
-                "socket_timeout": 15,
+                "extractor_args": _yt_client_args(["mweb"]),
+                "socket_timeout": 20,
             },
-            # Strategy 2: tv_embedded — TV client, less aggressive bot detection
+            # Strategy 2: android — Android app client; often bypasses IP-level blocks with PO token
             {
-                "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
-                "socket_timeout": 15,
+                "extractor_args": _yt_client_args(["android"]),
+                "socket_timeout": 20,
             },
-            # Strategy 3: ios — Apple client, different auth path
+            # Strategy 3: android_vr — historically lowest bot detection requirements
             {
-                "extractor_args": {"youtube": {"player_client": ["ios"]}},
-                "socket_timeout": 15,
+                "extractor_args": _yt_client_args(["android_vr"]),
+                "socket_timeout": 20,
             },
-            # Strategy 4: verbose default — diagnostics
+            # Strategy 4: tv_embedded — TV client, less aggressive bot detection
+            {
+                "extractor_args": _yt_client_args(["tv_embedded"]),
+                "socket_timeout": 20,
+            },
+            # Strategy 5: ios — Apple client, different auth path
+            {
+                "extractor_args": _yt_client_args(["ios"]),
+                "socket_timeout": 20,
+            },
+            # Strategy 6: verbose default — diagnostics; tries yt-dlp's default client list
             {
                 "quiet": False,
                 "verbose": True,
-                "socket_timeout": 20,
+                "socket_timeout": 25,
             },
         ]
     
