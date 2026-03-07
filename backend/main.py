@@ -4,6 +4,7 @@ import shutil
 import socket
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -51,12 +52,32 @@ async def startup_event():
         logger.warning(f"   Install Node.js to enable: curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs")
 
     # Check if bgutil PO token server is running on port 4416
+    bgutil_running = False
     try:
         with socket.create_connection(("localhost", 4416), timeout=1):
+            bgutil_running = True
             logger.info("✅ bgutil PO token server is running on port 4416 (YouTube PO tokens enabled)")
     except (ConnectionRefusedError, OSError):
         logger.warning("⚠️  bgutil PO token server not running on port 4416 - YouTube PO tokens unavailable")
         logger.warning("   Ensure start.sh started the bgutil server before Python")
+
+    # Test bgutil server can actually generate a PO token (not just that the port is open)
+    if bgutil_running:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                # Try the root endpoint to see server info
+                root_resp = await client.get("http://localhost:4416/")
+                logger.info(f"bgutil server info: {root_resp.text[:300]}")
+        except Exception as e:
+            logger.warning(f"bgutil server root check failed: {e}")
+
+    # Cookie status for YouTube
+    if os.environ.get("YOUTUBE_COOKIES"):
+        logger.info("✅ YOUTUBE_COOKIES env var set — YouTube session cookies will be used (bypasses IP blocks)")
+    else:
+        logger.warning("⚠️  YOUTUBE_COOKIES not set — YouTube will likely fail on cloud IPs (Render/AWS)")
+        logger.warning("   Fix: export cookies from a YouTube-logged-in browser, then:")
+        logger.warning("   base64 -w0 cookies.txt | copy output → set as YOUTUBE_COOKIES in Render env vars")
     
     # Check if fallback extractors are available
     try:

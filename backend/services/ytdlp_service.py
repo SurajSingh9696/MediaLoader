@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+import base64
 import asyncio
 import logging
 import shutil
@@ -38,6 +39,29 @@ if _node_path:
     print(f"[ytdlp_service] Node.js ready at: {_node_path} (dir in PATH: {_node_dir})", flush=True)
 else:
     print("[ytdlp_service] WARNING: Node.js not found - YouTube PO tokens unavailable", flush=True)
+
+# ---------------------------------------------------------------------------
+# YouTube cookies — loaded once from the YOUTUBE_COOKIES env var (base64-
+# encoded Netscape cookies.txt). When present, yt-dlp sends them with every
+# YouTube request, bypassing cloud-IP bot-detection blocks.
+# To generate: export cookies from your YouTube-logged-in browser via
+# "Get cookies.txt LOCALLY" Chrome extension, then:
+#   base64 -w0 cookies.txt  → copy the output → set as YOUTUBE_COOKIES in Render
+# ---------------------------------------------------------------------------
+_youtube_cookie_file: Optional[str] = None
+
+_cookies_b64 = os.environ.get("YOUTUBE_COOKIES", "").strip()
+if _cookies_b64:
+    try:
+        _cookie_path = "/tmp/youtube_cookies.txt"
+        Path(_cookie_path).write_text(base64.b64decode(_cookies_b64).decode("utf-8"))
+        _youtube_cookie_file = _cookie_path
+        print("[ytdlp_service] YouTube cookies loaded from YOUTUBE_COOKIES env var", flush=True)
+    except Exception as _e:
+        print(f"[ytdlp_service] WARNING: Failed to decode YOUTUBE_COOKIES: {_e}", flush=True)
+else:
+    print("[ytdlp_service] INFO: No YOUTUBE_COOKIES env var — YouTube may be blocked on cloud IPs."
+          " See README for setup instructions.", flush=True)
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
 
@@ -96,7 +120,9 @@ def _classify_error(exc: Exception) -> tuple[int, str]:
     if "po token" in msg_lower or "detected as a bot" in msg_lower:
         return 403, "YouTube requires additional verification for this video. Please try a different video or wait a few minutes."
     if "failed to extract any player response" in msg_lower:
-        return 503, "YouTube is temporarily blocking automated requests. Please try again in a few moments, or try a different video."
+        if _youtube_cookie_file:
+            return 503, "YouTube is blocking this request even with session cookies. Please try again in a few moments."
+        return 503, "YouTube is blocking requests from this server's IP. To fix: set the YOUTUBE_COOKIES environment variable in your Render dashboard (see README for instructions)."
     if "sign in to confirm" in msg_lower or "confirm you're not a bot" in msg_lower:
         return 403, "Bot detection triggered. Please try again in a moment or use a different video."
     if "private video" in msg_lower or "this video is private" in msg_lower:
@@ -150,8 +176,10 @@ def _base_ydl_opts() -> dict:
         "updatetime": False,
         "noprogress": True,
         # Enhanced headers to bypass bot detection across platforms
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # Chrome 133 — current stable as of early 2026
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
         "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
@@ -193,6 +221,10 @@ def _base_ydl_opts() -> dict:
         opts["js_runtimes"] = {"node": {}}
     if _ffmpeg_exe:
         opts["ffmpeg_location"] = _ffmpeg_exe
+    # YouTube cookies bypass cloud-IP bot detection — attach to all requests
+    # (yt-dlp only sends cookies to matching domains, so other platforms are unaffected)
+    if _youtube_cookie_file:
+        opts["cookiefile"] = _youtube_cookie_file
     return opts
 
 
@@ -203,72 +235,37 @@ async def get_metadata(url: str) -> VideoMetadata:
     """
     loop = asyncio.get_running_loop()
     
-    # Define multiple configuration strategies with increasing aggressiveness
+    # Strategies tried in order. On cloud IPs (Render/AWS) YouTube blocks all
+    # InnerTube clients regardless of PO tokens unless session cookies are
+    # provided via the YOUTUBE_COOKIES env var. Setting that var makes strategy
+    # 1 succeed immediately; without it the strategies exhaust quickly and the
+    # error message instructs the user on how to set up cookies.
     strategies = [
-        # Strategy 1: iOS with music (most stable)
+        # Strategy 1: ios + web — standard path; works when cookies are present
         {
-            "extractor_args": {"youtube": {"player_client": ["ios_music", "ios"]}},
-            "age_limit": None,
-            "extractor_retries": 3,
+            "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
+            "socket_timeout": 15,
         },
-        # Strategy 2: Android creator (content creator app)
-        {
-            "extractor_args": {"youtube": {"player_client": ["android_creator", "android"]}},
-            "age_limit": None,
-            "extractor_retries": 3,
-        },
-        # Strategy 3: Android VR (virtual reality client)
+        # Strategy 2: android_vr — no PO token required, sometimes bypasses block
         {
             "extractor_args": {"youtube": {"player_client": ["android_vr", "android"]}},
-            "age_limit": None,
+            "socket_timeout": 15,
         },
-        # Strategy 4: iOS with embedded
+        # Strategy 3: tv_embedded + mediaconnect — TV clients with less bot detection
         {
-            "extractor_args": {"youtube": {"player_client": ["ios_embedded", "ios"]}},
-            "age_limit": None,
+            "extractor_args": {"youtube": {"player_client": ["tv_embedded", "mediaconnect"]}},
+            "socket_timeout": 15,
         },
-        # Strategy 5: Android TV client (often bypasses bot detection)
-        {
-            "extractor_args": {"youtube": {"player_client": ["android_testsuite", "android"]}},
-            "age_limit": None,
-        },
-        # Strategy 6: Media Connect (smart TV client)
-        {
-            "extractor_args": {"youtube": {"player_client": ["mediaconnect"]}},
-            "age_limit": None,
-        },
-        # Strategy 7: TV embedded
-        {
-            "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
-            "age_limit": None,
-        },
-        # Strategy 8: Mobile web with compat options
+        # Strategy 4: mweb — mobile web, sometimes lower IP restrictions
         {
             "extractor_args": {"youtube": {"player_client": ["mweb"]}},
-            "age_limit": None,
-            "compat_opts": {"no-youtube-prefer-utc-upload-date"},
+            "socket_timeout": 15,
         },
-        # Strategy 9: Web with legacy options
-        {
-            "extractor_args": {"youtube": {"player_client": ["web"]}},
-            "age_limit": None,
-            "legacy_server_connect": True,
-            "nocheckcertificate": True,
-        },
-        # Strategy 10: Android music
-        {
-            "extractor_args": {"youtube": {"player_client": ["android_music", "android"]}},
-            "age_limit": None,
-        },
-        # Strategy 11: Minimal config (let yt-dlp decide)
-        {
-            "age_limit": None,
-            "extractor_retries": 5,
-        },
-        # Strategy 12: Last resort - completely minimal
+        # Strategy 5: yt-dlp default clients, verbose for diagnostics
         {
             "quiet": False,
             "verbose": True,
+            "socket_timeout": 20,
         },
     ]
     
