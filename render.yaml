@@ -5,7 +5,10 @@ services:
     region: oregon
     plan: free
     rootDir: .
-    buildCommand: pip install -r backend/requirements.txt
+    buildCommand: |
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      apt-get install -y nodejs
+      pip install -r backend/requirements.txt
     startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: TEMP_DOWNLOAD_DIR

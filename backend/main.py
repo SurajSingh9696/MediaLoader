@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -35,6 +36,18 @@ async def startup_event():
     logger.info(f"📦 yt-dlp version: {ytdlp_version}")
     logger.info(f"📁 Temp directory: {settings.temp_download_dir}")
     logger.info(f"🌐 Allowed origins: {settings.allowed_origins}")
+    
+    # Check for JavaScript runtimes (required for YouTube PO Token generation)
+    js_runtimes = []
+    for runtime in ["node", "deno", "bun", "quickjs"]:
+        if shutil.which(runtime):
+            js_runtimes.append(runtime)
+    
+    if js_runtimes:
+        logger.info(f"✅ JavaScript runtimes available: {', '.join(js_runtimes)} (enables YouTube PO Token support)")
+    else:
+        logger.warning(f"⚠️  No JavaScript runtime detected. YouTube PO Token generation unavailable.")
+        logger.warning(f"   Install Node.js to enable: curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs")
     
     # Check if fallback extractors are available
     try:
