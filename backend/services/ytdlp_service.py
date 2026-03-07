@@ -3,6 +3,8 @@ import re
 import uuid
 import asyncio
 import logging
+import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -25,6 +27,18 @@ except ImportError:
     logger.warning("Fallback extractors not available. Install pytubefix and instaloader for fallback support.")
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
+
+# Find Node.js path and add to environment for yt-dlp subprocess
+_node_path = shutil.which("node")
+if _node_path:
+    logger.info(f"Found Node.js at: {_node_path}")
+    # Ensure Node.js directory is in PATH for yt-dlp subprocesses
+    node_dir = str(Path(_node_path).parent)
+    if node_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{node_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        logger.info(f"Added Node.js directory to PATH: {node_dir}")
+else:
+    logger.warning("Node.js not found in PATH - PO token generation will be unavailable")
 
 # Resolve the bundled FFmpeg binary (works without a system-level install).
 # Pass the full exe path — yt-dlp accepts either a directory or a direct path,
@@ -151,6 +165,9 @@ def _base_ydl_opts() -> dict:
         },
         # Platform-specific extractor arguments for robustness
         "extractor_args": {
+            "youtube": {
+                "po_token": ["web"],  # Enable PO token generation using available JS runtime
+            },
             "instagram": {
                 "api": ["graphql", "web"],  # Use multiple API endpoints
             },
@@ -170,6 +187,8 @@ def _base_ydl_opts() -> dict:
         "geo_bypass_country": "US",
         # Avoid methods that trigger additional bot checks
         "no_check_formats": True,
+        # Enable PO token generation for YouTube (requires Node.js/Deno/Bun)
+        "enable_file_urls": False,  # Security: disable file:// URLs
     }
     if _ffmpeg_exe:
         opts["ffmpeg_location"] = _ffmpeg_exe
