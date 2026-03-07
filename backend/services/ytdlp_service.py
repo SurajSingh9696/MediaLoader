@@ -26,28 +26,18 @@ except ImportError:
     FALLBACK_AVAILABLE = False
     logger.warning("Fallback extractors not available. Install pytubefix and instaloader for fallback support.")
 
-# Configure PATH for Node.js BEFORE creating executor
-# This must happen at module level to ensure subprocesses inherit it
-_node_path = shutil.which("node")
+# Locate Node.js - prefer YTDLP_NODE_PATH set by start.sh, then fall back to PATH search.
+# Also ensure node dir is in os.environ PATH so yt-dlp's PATH-based runtime detection works.
+_node_path = os.environ.get("YTDLP_NODE_PATH") or shutil.which("node") or shutil.which("nodejs")
 if _node_path:
-    node_dir = str(Path(_node_path).parent)
-    current_path = os.environ.get("PATH", "")
-    if node_dir not in current_path:
-        os.environ["PATH"] = f"{node_dir}{os.pathsep}{current_path}"
-        print(f"[ytdlp_service] Added Node.js to PATH: {node_dir}", flush=True)
-    print(f"[ytdlp_service] Node.js available at: {_node_path}", flush=True)
-    
-    # Test if node actually works
-    try:
-        result = subprocess.run([_node_path, "--version"], capture_output=True, text=True, timeout=2)
-        if result.returncode == 0:
-            print(f"[ytdlp_service] Node.js test successful: {result.stdout.strip()}", flush=True)
-        else:
-            print(f"[ytdlp_service] Node.js test failed: {result.stderr}", flush=True)
-    except Exception as e:
-        print(f"[ytdlp_service] Node.js test error: {e}", flush=True)
+    # Ensure the directory containing node is in PATH (yt-dlp detects runtimes by searching PATH)
+    _node_dir = str(Path(_node_path).parent)
+    _current_path = os.environ.get("PATH", "")
+    if _node_dir not in _current_path:
+        os.environ["PATH"] = f"{_node_dir}{os.pathsep}{_current_path}"
+    print(f"[ytdlp_service] Node.js ready at: {_node_path} (dir in PATH: {_node_dir})", flush=True)
 else:
-    print("[ytdlp_service] WARNING: Node.js not found - PO tokens unavailable", flush=True)
+    print("[ytdlp_service] WARNING: Node.js not found - YouTube PO tokens unavailable", flush=True)
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
 
@@ -176,12 +166,8 @@ def _base_ydl_opts() -> dict:
         },
         # Platform-specific extractor arguments for robustness
         "extractor_args": {
-            "youtube": {
-                # Let yt-dlp auto-detect and use available JS runtime for PO tokens
-                # Don't explicitly specify providers - auto-detection works better
-            },
             "instagram": {
-                "api": ["graphql", "web"],  # Use multiple API endpoints
+                "api": ["graphql", "web"],
             },
             "tiktok": {
                 "api": ["mobile_api", "web_api"],
@@ -192,16 +178,19 @@ def _base_ydl_opts() -> dict:
             },
         },
         # Additional robustness settings
-        "nocheckcertificate": False,  # Keep certificate checks for security
+        "nocheckcertificate": False,
         "prefer_insecure": False,
         "no_check_certificates": False,
         "geo_bypass": True,
         "geo_bypass_country": "US",
-        # Avoid methods that trigger additional bot checks
         "no_check_formats": True,
-        # Enable PO token generation for YouTube (requires Node.js/Deno/Bun)
-        "enable_file_urls": False,  # Security: disable file:// URLs
+        "enable_file_urls": False,
     }
+    # Tell yt-dlp to use Node.js for YouTube PO token generation.
+    # yt-dlp defaults to {'deno': {}} - we override to use node (found via PATH set in start.sh).
+    # Format is {runtime_name: {}} - yt-dlp locates the executable itself via PATH.
+    if _node_path:
+        opts["js_runtimes"] = {"node": {}}
     if _ffmpeg_exe:
         opts["ffmpeg_location"] = _ffmpeg_exe
     return opts
