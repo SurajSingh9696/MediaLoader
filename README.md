@@ -94,6 +94,22 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 Runs at http://localhost:8000
 
+**Important:** Keep yt-dlp updated for best YouTube compatibility:
+```bash
+cd backend
+python update_ytdlp.py
+# OR: pip install --upgrade yt-dlp
+```
+
+**Fallback Extractors:**
+The app includes dedicated fallback libraries:
+- **pytubefix** - YouTube fallback when yt-dlp fails
+- **instaloader** - Instagram fallback when yt-dlp fails
+
+These are automatically used when yt-dlp extraction fails, providing additional resilience for YouTube and Instagram content.
+
+**See [FALLBACK_SYSTEM.md](FALLBACK_SYSTEM.md) for detailed documentation on the fallback system architecture.**
+
 ### Environment Variables
 
 **.env.local** (frontend):
@@ -117,6 +133,33 @@ TEMP_DOWNLOAD_DIR=C:/temp/mediafetch
 ```json
 { "url": "...", "type": "video", "format_id": "137" }
 { "url": "...", "type": "audio", "audio_quality": "320" }
+```
+
+## Troubleshooting
+
+### YouTube "Failed to extract player response" Error
+
+This is the most common issue. **Solution:**
+
+1. Update yt-dlp immediately:
+   ```bash
+   cd backend
+   python update_ytdlp.py
+   ```
+
+2. Restart your backend service
+
+3. Check your version at `http://localhost:8000/health`
+
+The app automatically tries 12 different extraction strategies including iOS Music, Android TV, and various embedded clients. If all fail, your yt-dlp version is likely outdated.
+
+**See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for comprehensive troubleshooting guide.**
+
+### Quick Health Check
+
+```bash
+# Check backend status and yt-dlp version
+curl http://localhost:8000/health
 ```
 
 ## Legal Notice

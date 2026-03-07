@@ -7,3 +7,7 @@ python-multipart==0.0.20
 imageio-ffmpeg>=0.5.1
 aiofiles==24.1.0
 httpx==0.28.1
+
+# Fallback libraries for specific platforms
+pytubefix>=6.10.0
+instaloader>=4.10.0

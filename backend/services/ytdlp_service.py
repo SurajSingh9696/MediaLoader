@@ -16,6 +16,14 @@ from backend.models.schemas import VideoMetadata, VideoFormat
 
 logger = logging.getLogger(__name__)
 
+# Import fallback extractors
+try:
+    from backend.services import fallback_extractors
+    FALLBACK_AVAILABLE = True
+except ImportError:
+    FALLBACK_AVAILABLE = False
+    logger.warning("Fallback extractors not available. Install pytubefix and instaloader for fallback support.")
+
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
 
 # Resolve the bundled FFmpeg binary (works without a system-level install).
@@ -173,53 +181,78 @@ async def get_metadata(url: str) -> VideoMetadata:
     
     # Define multiple configuration strategies with increasing aggressiveness
     strategies = [
-        # Strategy 1: iOS client (most reliable, bypasses most restrictions)
+        # Strategy 1: iOS with music (most stable)
         {
-            "extractor_args": {"youtube": {"player_client": ["ios"]}},
+            "extractor_args": {"youtube": {"player_client": ["ios_music", "ios"]}},
+            "age_limit": None,
+            "extractor_retries": 3,
+        },
+        # Strategy 2: Android creator (content creator app)
+        {
+            "extractor_args": {"youtube": {"player_client": ["android_creator", "android"]}},
+            "age_limit": None,
+            "extractor_retries": 3,
+        },
+        # Strategy 3: Android VR (virtual reality client)
+        {
+            "extractor_args": {"youtube": {"player_client": ["android_vr", "android"]}},
             "age_limit": None,
         },
-        # Strategy 2: Android TV client (often bypasses bot detection)
+        # Strategy 4: iOS with embedded
+        {
+            "extractor_args": {"youtube": {"player_client": ["ios_embedded", "ios"]}},
+            "age_limit": None,
+        },
+        # Strategy 5: Android TV client (often bypasses bot detection)
         {
             "extractor_args": {"youtube": {"player_client": ["android_testsuite", "android"]}},
             "age_limit": None,
         },
-        # Strategy 3: Android with embedded player
+        # Strategy 6: Media Connect (smart TV client)
         {
-            "extractor_args": {"youtube": {"player_client": ["android_embedded", "android"]}},
+            "extractor_args": {"youtube": {"player_client": ["mediaconnect"]}},
             "age_limit": None,
         },
-        # Strategy 4: Media Connect (smart TV client)
-        {
-            "extractor_args": {"youtube": {"player_client": ["mediaconnect", "android"]}},
-            "age_limit": None,
-        },
-        # Strategy 5: TV embedded
+        # Strategy 7: TV embedded
         {
             "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
             "age_limit": None,
         },
-        # Strategy 6: Mobile web
+        # Strategy 8: Mobile web with compat options
         {
             "extractor_args": {"youtube": {"player_client": ["mweb"]}},
             "age_limit": None,
+            "compat_opts": {"no-youtube-prefer-utc-upload-date"},
         },
-        # Strategy 7: Web with all bypasses
+        # Strategy 9: Web with legacy options
         {
-            "extractor_args": {"youtube": {"player_client": ["web"], "skip": ["webpage"]}},
+            "extractor_args": {"youtube": {"player_client": ["web"]}},
             "age_limit": None,
+            "legacy_server_connect": True,
             "nocheckcertificate": True,
         },
-        # Strategy 8: Default with certificate bypass
+        # Strategy 10: Android music
         {
-            "nocheckcertificate": True,
+            "extractor_args": {"youtube": {"player_client": ["android_music", "android"]}},
             "age_limit": None,
+        },
+        # Strategy 11: Minimal config (let yt-dlp decide)
+        {
+            "age_limit": None,
+            "extractor_retries": 5,
+        },
+        # Strategy 12: Last resort - completely minimal
+        {
+            "quiet": False,
+            "verbose": True,
         },
     ]
     
     last_exception = None
     is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+    is_instagram = "instagram.com" in url.lower()
     
-    # For non-YouTube URLs, just use default config
+    # For non-YouTube URLs, use simplified strategies
     if not is_youtube:
         strategies = [{}]
     
@@ -247,17 +280,46 @@ async def get_metadata(url: str) -> VideoMetadata:
             # If this is not the last strategy, try the next one
             if strategy_idx < len(strategies) - 1:
                 logger.warning(f"Extraction attempt {strategy_idx + 1} failed for {url}, trying alternative method...")
-                # Exponential backoff: 1s, 2s, 3s delays
-                await asyncio.sleep(min(strategy_idx + 1, 3))
+                # Variable backoff: 0.5s for first 5, then 1s, then 2s
+                delay = 0.5 if strategy_idx < 5 else (1.0 if strategy_idx < 8 else 2.0)
+                await asyncio.sleep(delay)
                 continue
-            # If this was the last strategy, raise the exception
+            # Last strategy failed - try fallback extractors
+            if FALLBACK_AVAILABLE:
+                if is_youtube:
+                    logger.warning(f"All yt-dlp strategies failed for YouTube URL, trying pytubefix fallback...")
+                    try:
+                        return await fallback_extractors.get_youtube_metadata_fallback(url)
+                    except Exception as fallback_exc:
+                        logger.error(f"YouTube fallback also failed: {fallback_exc}")
+                elif is_instagram:
+                    logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
+                    try:
+                        return await fallback_extractors.get_instagram_metadata_fallback(url)
+                    except Exception as fallback_exc:
+                        logger.error(f"Instagram fallback also failed: {fallback_exc}")
             raise exc
         except Exception as exc:
             last_exception = exc
             if strategy_idx < len(strategies) - 1:
                 logger.warning(f"Extraction attempt {strategy_idx + 1} failed for {url}, trying alternative method...")
-                await asyncio.sleep(min(strategy_idx + 1, 3))
+                delay = 0.5 if strategy_idx < 5 else (1.0 if strategy_idx < 8 else 2.0)
+                await asyncio.sleep(delay)
                 continue
+            # Last strategy failed - try fallback extractors
+            if FALLBACK_AVAILABLE:
+                if is_youtube:
+                    logger.warning(f"All yt-dlp strategies failed for YouTube URL, trying pytubefix fallback...")
+                    try:
+                        return await fallback_extractors.get_youtube_metadata_fallback(url)
+                    except Exception as fallback_exc:
+                        logger.error(f"YouTube fallback also failed: {fallback_exc}")
+                elif is_instagram:
+                    logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
+                    try:
+                        return await fallback_extractors.get_instagram_metadata_fallback(url)
+                    except Exception as fallback_exc:
+                        logger.error(f"Instagram fallback also failed: {fallback_exc}")
             raise exc
     
     # If we somehow exit the loop without info, raise the last exception
@@ -343,6 +405,12 @@ def _build_video_format_selector(format_id: Optional[str], info_formats: list[di
 
 
 async def download_video(url: str, format_id: Optional[str] = None) -> tuple[Path, str]:
+    """
+    Download video using yt-dlp with platform-specific fallbacks if extraction fails.
+    """
+    is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+    is_instagram = "instagram.com" in url.lower()
+    
     temp_dir = Path(settings.temp_download_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -358,58 +426,77 @@ async def download_video(url: str, format_id: Optional[str] = None) -> tuple[Pat
             info = ydl.extract_info(url, download=False)
             return info.get("formats") or [] if info else []
 
-    info_formats = await loop.run_in_executor(_executor, _probe)
+    try:
+        info_formats = await loop.run_in_executor(_executor, _probe)
 
-    format_selector = _build_video_format_selector(format_id, info_formats)
+        format_selector = _build_video_format_selector(format_id, info_formats)
 
-    ydl_opts = {
-        **_base_ydl_opts(),
-        "outtmpl": output_template,
-        "format": format_selector,
-        "merge_output_format": "mp4",
-        "postprocessors": [
-            {
-                "key": "FFmpegVideoConvertor",
-                "preferedformat": "mp4",
-            },
-            {
-                "key": "FFmpegMetadata",
-                "add_metadata": True,
-            },
-        ],
-        # Additional download robustness
-        "ignoreerrors": False,
-        "no_color": True,
-        "extract_flat": False,
-    }
+        ydl_opts = {
+            **_base_ydl_opts(),
+            "outtmpl": output_template,
+            "format": format_selector,
+            "merge_output_format": "mp4",
+            "postprocessors": [
+                {
+                    "key": "FFmpegVideoConvertor",
+                    "preferedformat": "mp4",
+                },
+                {
+                    "key": "FFmpegMetadata",
+                    "add_metadata": True,
+                },
+            ],
+            # Additional download robustness
+            "ignoreerrors": False,
+            "no_color": True,
+            "extract_flat": False,
+        }
 
-    def _download() -> dict:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if info is None:
-                raise RuntimeError("Download returned no information")
-            return info
+        def _download() -> dict:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info is None:
+                    raise RuntimeError("Download returned no information")
+                return info
 
-    info = await loop.run_in_executor(_executor, _download)
+        info = await loop.run_in_executor(_executor, _download)
 
-    title = _sanitize_filename(info.get("title") or "video")
+        title = _sanitize_filename(info.get("title") or "video")
 
-    mp4_files = list(temp_dir.glob(f"{session_id}*.mp4"))
-    if mp4_files:
-        file_path = mp4_files[0]
-        return file_path, f"{title}.mp4"
+        mp4_files = list(temp_dir.glob(f"{session_id}*.mp4"))
+        if mp4_files:
+            file_path = mp4_files[0]
+            return file_path, f"{title}.mp4"
 
-    all_files = sorted(
-        [f for f in temp_dir.glob(f"{session_id}.*") if not f.suffix in (".part", ".ytdl")],
-        key=lambda f: f.stat().st_size,
-        reverse=True,
-    )
-    if not all_files:
-        raise RuntimeError("Downloaded file not found in temp directory")
+        all_files = sorted(
+            [f for f in temp_dir.glob(f"{session_id}.*") if not f.suffix in (".part", ".ytdl")],
+            key=lambda f: f.stat().st_size,
+            reverse=True,
+        )
+        if not all_files:
+            raise RuntimeError("Downloaded file not found in temp directory")
 
-    file_path = all_files[0]
-    ext = file_path.suffix.lstrip(".") or "mp4"
-    return file_path, f"{title}.{ext}"
+        file_path = all_files[0]
+        ext = file_path.suffix.lstrip(".") or "mp4"
+        return file_path, f"{title}.{ext}"
+    
+    except Exception as exc:
+        # Try fallback extractors if available
+        if FALLBACK_AVAILABLE:
+            if is_youtube:
+                logger.warning(f"yt-dlp download failed for YouTube, trying pytubefix fallback...")
+                try:
+                    return await fallback_extractors.download_youtube_video_fallback(url, format_id)
+                except Exception as fallback_exc:
+                    logger.error(f"YouTube download fallback also failed: {fallback_exc}")
+            elif is_instagram:
+                logger.warning(f"yt-dlp download failed for Instagram, trying instaloader fallback...")
+                try:
+                    return await fallback_extractors.download_instagram_video_fallback(url)
+                except Exception as fallback_exc:
+                    logger.error(f"Instagram download fallback also failed: {fallback_exc}")
+        # Re-raise the original exception if no fallback succeeded
+        raise exc
 
 
 async def download_audio(url: str, quality: str = "192") -> tuple[Path, str]:
