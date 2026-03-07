@@ -14,6 +14,8 @@ A production-grade social media video downloader built with **Next.js 16**, **Fa
 - Glassmorphism dark UI with Framer Motion animations
 - Mobile-first responsive design
 
+**⚠️ Important:** YouTube has implemented bot detection (PO Token requirement) that affects all automated downloaders. Success rate for YouTube varies by video. See [YOUTUBE_LIMITATIONS.md](YOUTUBE_LIMITATIONS.md) for details.
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -152,7 +154,17 @@ This is the most common issue. **Solution:**
 3. Check your version at `http://localhost:8000/health`
 
 The app automatically tries 12 different extraction strategies including iOS Music, Android TV, and various embedded clients. If all fail, your yt-dlp version is likely outdated.
+### YouTube Bot Detection / PO Token Issues
 
+**Current Limitation:** YouTube has implemented aggressive bot detection (PO Token requirement) that affects both yt-dlp and pytubefix. Some videos may be inaccessible due to this restriction.
+
+**What you can do:**
+- Try different YouTube videos - not all are equally restricted
+- Update yt-dlp regularly: `pip install --upgrade yt-dlp`  
+- Wait 10-15 minutes and try again (temporary IP blocks)
+- Use publicly popular videos (they're less likely to have additional checks)
+
+**Technical Note:** YouTube requires "Proof of Origin" (PO) tokens for certain videos, which requires JavaScript runtime environments. This is a platform-wide limitation affecting all automated downloaders.
 **See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for comprehensive troubleshooting guide.**
 
 ### Quick Health Check

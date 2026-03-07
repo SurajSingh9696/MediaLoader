@@ -78,8 +78,10 @@ def _classify_error(exc: Exception) -> tuple[int, str]:
 
     if "unsupported url" in msg_lower:
         return 422, f"Platform not supported. Ensure the URL is from a supported site."
+    if "po token" in msg_lower or "detected as a bot" in msg_lower:
+        return 403, "YouTube requires additional verification for this video. Please try a different video or wait a few minutes."
     if "failed to extract any player response" in msg_lower:
-        return 503, "YouTube is temporarily blocking requests. Please try again in a few moments."
+        return 503, "YouTube is temporarily blocking automated requests. Please try again in a few moments, or try a different video."
     if "sign in to confirm" in msg_lower or "confirm you're not a bot" in msg_lower:
         return 403, "Bot detection triggered. Please try again in a moment or use a different video."
     if "private video" in msg_lower or "this video is private" in msg_lower:
@@ -166,6 +168,8 @@ def _base_ydl_opts() -> dict:
         "no_check_certificates": False,
         "geo_bypass": True,
         "geo_bypass_country": "US",
+        # Avoid methods that trigger additional bot checks
+        "no_check_formats": True,
     }
     if _ffmpeg_exe:
         opts["ffmpeg_location"] = _ffmpeg_exe
@@ -291,7 +295,11 @@ async def get_metadata(url: str) -> VideoMetadata:
                     try:
                         return await fallback_extractors.get_youtube_metadata_fallback(url)
                     except Exception as fallback_exc:
-                        logger.error(f"YouTube fallback also failed: {fallback_exc}")
+                        error_msg = str(fallback_exc).lower()
+                        if "po token" in error_msg or "detected as a bot" in error_msg:
+                            logger.error(f"Both yt-dlp and pytubefix blocked by YouTube bot detection. This video requires PO tokens. Try a different YouTube video or use another platform.")
+                        else:
+                            logger.error(f"YouTube fallback also failed: {fallback_exc}")
                 elif is_instagram:
                     logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
                     try:
@@ -313,7 +321,11 @@ async def get_metadata(url: str) -> VideoMetadata:
                     try:
                         return await fallback_extractors.get_youtube_metadata_fallback(url)
                     except Exception as fallback_exc:
-                        logger.error(f"YouTube fallback also failed: {fallback_exc}")
+                        error_msg = str(fallback_exc).lower()
+                        if "po token" in error_msg or "detected as a bot" in error_msg:
+                            logger.error(f"Both yt-dlp and pytubefix blocked by YouTube bot detection. This video requires PO tokens. Try a different YouTube video or use another platform.")
+                        else:
+                            logger.error(f"YouTube fallback also failed: {fallback_exc}")
                 elif is_instagram:
                     logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
                     try:
@@ -488,7 +500,11 @@ async def download_video(url: str, format_id: Optional[str] = None) -> tuple[Pat
                 try:
                     return await fallback_extractors.download_youtube_video_fallback(url, format_id)
                 except Exception as fallback_exc:
-                    logger.error(f"YouTube download fallback also failed: {fallback_exc}")
+                    error_msg = str(fallback_exc).lower()
+                    if "po token" in error_msg or "detected as a bot" in error_msg:
+                        logger.error(f"Both yt-dlp and pytubefix blocked by YouTube bot detection for download. This video requires PO tokens. Try a different YouTube video or use another platform.")
+                    else:
+                        logger.error(f"YouTube download fallback also failed: {fallback_exc}")
             elif is_instagram:
                 logger.warning(f"yt-dlp download failed for Instagram, trying instaloader fallback...")
                 try:
