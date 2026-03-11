@@ -324,37 +324,30 @@ async def get_metadata(url: str) -> VideoMetadata:
             },
         ]
     else:
+        # Cookie-only or no-auth mode.
+        # The yt-dlp-youtube-oauth2 plugin, once installed, overrides ALL YouTube
+        # extractors and uses its own hardcoded client list (tv downgraded → web →
+        # web safari) regardless of extractor_args player_client overrides. All
+        # three of those clients are blocked from cloud/datacenter IPs. Running 6
+        # strategies wastes ~20s without any chance of success. We run two quick
+        # attempts then exit to the Invidious / YouTube Data API fallbacks faster.
         strategies = [
-            # Strategy 1: mweb — mobile web client; works well with bgutil PO tokens from cloud IPs
+            # Attempt 1: Standard — plugin with cookies + bgutil PO token
             {
-                "extractor_args": _yt_client_args(["mweb"]),
-                "socket_timeout": 20,
+                "socket_timeout": 15,
             },
-            # Strategy 2: android — Android app client; often bypasses IP-level blocks with PO token
+            # Attempt 2: No cookies — removes the cookie+cloud-IP fingerprint;
+            # relies solely on the bgutil PO token. Some cloud IPs are only blocked
+            # when a cookie is present (YouTube targets authenticated cloud requests).
             {
-                "extractor_args": _yt_client_args(["android"]),
-                "socket_timeout": 20,
+                "_no_cookiefile": True,
+                "socket_timeout": 15,
             },
-            # Strategy 3: android_vr — historically lowest bot detection requirements
-            {
-                "extractor_args": _yt_client_args(["android_vr"]),
-                "socket_timeout": 20,
-            },
-            # Strategy 4: tv_embedded — TV client, less aggressive bot detection
-            {
-                "extractor_args": _yt_client_args(["tv_embedded"]),
-                "socket_timeout": 20,
-            },
-            # Strategy 5: ios — Apple client, different auth path
-            {
-                "extractor_args": _yt_client_args(["ios"]),
-                "socket_timeout": 20,
-            },
-            # Strategy 6: verbose default — diagnostics; tries yt-dlp's default client list
+            # Attempt 3: Verbose diagnostic — captures full debug output
             {
                 "quiet": False,
                 "verbose": True,
-                "socket_timeout": 25,
+                "socket_timeout": 20,
             },
         ]
     
@@ -371,8 +364,12 @@ async def get_metadata(url: str) -> VideoMetadata:
         opts = {
             **base_opts,
             "skip_download": True,
-            **strategy_config,
+            # Exclude private _no_cookiefile sentinel from yt-dlp params
+            **{k: v for k, v in strategy_config.items() if k != "_no_cookiefile"},
         }
+        # Remove cookiefile for no-cookie strategies (removes cookie+cloud-IP fingerprint)
+        if strategy_config.get("_no_cookiefile"):
+            opts.pop("cookiefile", None)
         # Deep-merge extractor_args: strategy overrides must ADD to the base
         # instagram/tiktok/twitter keys, not replace the entire dict.
         if "extractor_args" in strategy_config:
@@ -411,14 +408,29 @@ async def get_metadata(url: str) -> VideoMetadata:
                     except Exception as pytubefix_exc:
                         error_msg = str(pytubefix_exc).lower()
                         if "po token" in error_msg or "detected as a bot" in error_msg:
-                            logger.warning("pytubefix also blocked. Trying Invidious API fallback...")
+                            logger.warning("pytubefix also blocked. Trying innertube fallback...")
                         else:
-                            logger.warning(f"pytubefix failed ({pytubefix_exc}). Trying Invidious API fallback...")
+                            logger.warning(f"pytubefix failed ({pytubefix_exc}). Trying innertube fallback...")
+                    # innertube: TV_EMBEDDED/ANDROID_MUSIC clients — different fingerprint from yt-dlp
+                    try:
+                        return await fallback_extractors.get_youtube_metadata_innertube(url)
+                    except Exception as inner_exc:
+                        logger.warning(f"innertube also failed ({inner_exc}). Trying Invidious API fallback...")
                     # Invidious: works from any IP, no auth required
                     try:
                         return await fallback_extractors.get_youtube_metadata_invidious(url)
                     except Exception as inv_exc:
                         logger.error(f"All YouTube fallbacks failed. Invidious: {inv_exc}")
+                    # Last resort: YouTube Data API v3 — free, works from any IP.
+                    # Set YOUTUBE_API_KEY in Render env vars (console.cloud.google.com).
+                    try:
+                        meta = await fallback_extractors.get_youtube_metadata_ytdata_api(url)
+                        logger.info("YouTube Data API v3 succeeded (metadata only — no download URLs)")
+                        return meta
+                    except RuntimeError:
+                        pass  # YOUTUBE_API_KEY not configured
+                    except Exception as api_exc:
+                        logger.error(f"YouTube Data API v3 fallback failed: {api_exc}")
                 elif is_instagram:
                     logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
                     try:
@@ -442,14 +454,29 @@ async def get_metadata(url: str) -> VideoMetadata:
                     except Exception as pytubefix_exc:
                         error_msg = str(pytubefix_exc).lower()
                         if "po token" in error_msg or "detected as a bot" in error_msg:
-                            logger.warning("pytubefix also blocked. Trying Invidious API fallback...")
+                            logger.warning("pytubefix also blocked. Trying innertube fallback...")
                         else:
-                            logger.warning(f"pytubefix failed ({pytubefix_exc}). Trying Invidious API fallback...")
+                            logger.warning(f"pytubefix failed ({pytubefix_exc}). Trying innertube fallback...")
+                    # innertube: TV_EMBEDDED/ANDROID_MUSIC clients — different fingerprint from yt-dlp
+                    try:
+                        return await fallback_extractors.get_youtube_metadata_innertube(url)
+                    except Exception as inner_exc:
+                        logger.warning(f"innertube also failed ({inner_exc}). Trying Invidious API fallback...")
                     # Invidious: works from any IP, no auth required
                     try:
                         return await fallback_extractors.get_youtube_metadata_invidious(url)
                     except Exception as inv_exc:
                         logger.error(f"All YouTube fallbacks failed. Invidious: {inv_exc}")
+                    # Last resort: YouTube Data API v3 — free, works from any IP.
+                    # Set YOUTUBE_API_KEY in Render env vars (console.cloud.google.com).
+                    try:
+                        meta = await fallback_extractors.get_youtube_metadata_ytdata_api(url)
+                        logger.info("YouTube Data API v3 succeeded (metadata only — no download URLs)")
+                        return meta
+                    except RuntimeError:
+                        pass  # YOUTUBE_API_KEY not configured
+                    except Exception as api_exc:
+                        logger.error(f"YouTube Data API v3 fallback failed: {api_exc}")
                 elif is_instagram:
                     logger.warning(f"yt-dlp failed for Instagram URL, trying instaloader fallback...")
                     try:

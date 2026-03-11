@@ -5,6 +5,7 @@ Uses platform-specific libraries for YouTube and Instagram.
 
 import asyncio
 import logging
+import os
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -403,7 +404,7 @@ async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
                 # Some instances return a JSON error object (e.g. their own IP is blocked by YouTube)
                 if "error" in data:
                     err_msg = data['error']
-                    logger.debug(f"Invidious {instance} API error: {err_msg}")
+                    logger.warning(f"Invidious {instance} returned error: {err_msg}")
                     last_error = RuntimeError(f"{instance}: {err_msg}")
                     continue
 
@@ -478,4 +479,217 @@ async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
                 last_error = exc
 
     raise RuntimeError(f"All Invidious instances failed. Last error: {last_error}")
+
+
+# ============================================================================
+# INNERTUBE FALLBACK (direct YouTube InnerTube API)
+# ============================================================================
+
+async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
+    """
+    Extract YouTube metadata + stream URLs via the InnerTube API directly.
+
+    Uses the TV_EMBEDDED and ANDROID_MUSIC clients, which YouTube treats as
+    trusted embedded/app clients with lighter bot-detection than the web client.
+    No authentication required. Works as a fallback when yt-dlp's web/android
+    clients are blocked from cloud IPs.
+    """
+    try:
+        from innertube import InnerTube
+    except ImportError:
+        raise ImportError("innertube is not installed. Add innertube>=5.0.0 to requirements.txt")
+
+    video_id = _yt_video_id(url)
+    if not video_id:
+        raise ValueError(f"Could not extract video ID from URL: {url}")
+
+    # TV_EMBEDDED: used by embedded YouTube players; historically low restrictions.
+    # ANDROID_MUSIC: YouTube Music's Android client; less aggressively blocked.
+    # WEB_CREATOR: YouTube Studio client; different fingerprint from regular web.
+    _CLIENTS = ["TV_EMBEDDED", "ANDROID_MUSIC", "ANDROID", "WEB_CREATOR"]
+
+    loop = asyncio.get_running_loop()
+    last_exc: Exception = RuntimeError("innertube: no clients tried")
+
+    for client_name in _CLIENTS:
+        def _fetch(cn: str = client_name) -> dict:
+            client = InnerTube(cn)
+            return client.player(video_id)
+
+        try:
+            data = await loop.run_in_executor(_executor, _fetch)
+        except Exception as exc:
+            logger.debug(f"innertube client {client_name} request failed: {exc}")
+            last_exc = exc
+            continue
+
+        # Check playability
+        playability = data.get("playabilityStatus", {})
+        status = playability.get("status", "")
+        if status not in ("OK", "LIVE_STREAM_OFFLINE"):
+            reason = playability.get("reason") or playability.get("errorScreen", {}).get("playerErrorMessageRenderer", {}).get("subreason", {}).get("simpleText", status)
+            logger.debug(f"innertube {client_name}: playabilityStatus={status} ({reason})")
+            last_exc = RuntimeError(f"{client_name}: {reason or status}")
+            continue
+
+        video_details = data.get("videoDetails", {})
+        streaming_data = data.get("streamingData", {})
+
+        formats: list[VideoFormat] = []
+        for f in streaming_data.get("formats", []) + streaming_data.get("adaptiveFormats", []):
+            mime = f.get("mimeType", "")
+            if not mime:
+                continue
+            is_video = "video" in mime
+            is_audio = "audio" in mime
+            ext = mime.split("/")[1].split(";")[0] if "/" in mime else "mp4"
+
+            # Prefer url; some clients use signatureCipher which we can't easily decrypt here
+            if not f.get("url"):
+                continue
+
+            qlabel = f.get("qualityLabel", "")
+            height: Optional[int] = None
+            try:
+                height = int(qlabel.rstrip("p")) if qlabel.endswith("p") else f.get("height")
+            except (ValueError, TypeError):
+                height = f.get("height")
+
+            abr_val: Optional[str] = None
+            if f.get("audioSampleRate") and is_audio and not is_video:
+                bitrate = f.get("bitrate")
+                abr_val = f"{bitrate // 1000}k" if bitrate else None
+
+            formats.append(VideoFormat(
+                format_id=str(f.get("itag", "")),
+                resolution=qlabel or ("audio" if is_audio and not is_video else "video"),
+                ext=ext,
+                filesize=f.get("contentLength") and int(f["contentLength"]),
+                vcodec=mime.split("codecs=")[-1].strip('"') if is_video and "codecs=" in mime else None,
+                acodec=mime.split("codecs=")[-1].strip('"') if is_audio and not is_video and "codecs=" in mime else None,
+                height=height,
+                abr=abr_val,
+            ))
+
+        thumbnails = video_details.get("thumbnail", {}).get("thumbnails", [])
+        thumbnail = thumbnails[-1]["url"] if thumbnails else None
+
+        duration: Optional[int] = None
+        try:
+            duration = int(video_details.get("lengthSeconds", 0)) or None
+        except (ValueError, TypeError):
+            pass
+
+        view_count: Optional[int] = None
+        try:
+            view_count = int(video_details.get("viewCount", 0)) or None
+        except (ValueError, TypeError):
+            pass
+
+        logger.info(f"innertube {client_name} succeeded for {video_id} ({len(formats)} formats)")
+        return VideoMetadata(
+            title=video_details.get("title", "YouTube Video"),
+            thumbnail=thumbnail,
+            duration=duration,
+            uploader=video_details.get("author"),
+            platform="YouTube",
+            url=url,
+            formats=formats,
+            description=(video_details.get("shortDescription") or "")[:400] or None,
+            view_count=view_count,
+        )
+
+    raise RuntimeError(f"innertube: all clients failed. Last error: {last_exc}")
+
+def _parse_iso8601_duration(duration_str: str) -> Optional[int]:
+    """Convert ISO 8601 duration string (e.g. PT4M13S) to total seconds."""
+    if not duration_str:
+        return None
+    m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
+    if not m:
+        return None
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2) or 0)
+    seconds = int(m.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+
+async def get_youtube_metadata_ytdata_api(url: str) -> VideoMetadata:
+    """
+    Extract YouTube metadata via the official YouTube Data API v3.
+
+    Works from any IP (including cloud/Render). Returns title, thumbnail,
+    duration, view/like counts — but no stream download URLs.
+
+    Setup (one-time, free):
+      1. Go to https://console.cloud.google.com/apis/library/youtube.googleapis.com
+      2. Enable YouTube Data API v3 and create an API key
+      3. Set YOUTUBE_API_KEY in your Render dashboard environment variables
+      (Free quota: 10,000 units/day; a metadata lookup costs 1 unit)
+    """
+    api_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("YOUTUBE_API_KEY not configured")
+
+    video_id = _yt_video_id(url)
+    if not video_id:
+        raise ValueError(f"Could not extract video ID from URL: {url}")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={
+                "id": video_id,
+                "part": "snippet,contentDetails,statistics",
+                "key": api_key,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    items = data.get("items", [])
+    if not items:
+        raise ValueError(f"Video {video_id} not found via YouTube Data API")
+
+    item = items[0]
+    snippet = item.get("snippet", {})
+    content_details = item.get("contentDetails", {})
+    statistics = item.get("statistics", {})
+
+    duration = _parse_iso8601_duration(content_details.get("duration", ""))
+
+    thumbnails = snippet.get("thumbnails", {})
+    thumbnail = (
+        thumbnails.get("maxres", {}).get("url")
+        or thumbnails.get("high", {}).get("url")
+        or thumbnails.get("default", {}).get("url")
+    )
+
+    view_count: Optional[int] = None
+    try:
+        view_count = int(statistics["viewCount"])
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    like_count: Optional[int] = None
+    try:
+        like_count = int(statistics["likeCount"])
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    logger.info(f"YouTube Data API v3 succeeded for {video_id}")
+    return VideoMetadata(
+        title=snippet.get("title", "YouTube Video"),
+        thumbnail=thumbnail,
+        duration=duration,
+        uploader=snippet.get("channelTitle"),
+        platform="YouTube",
+        url=url,
+        # No stream URLs available from the Data API; the frontend will show
+        # metadata/preview but download will require OAuth2 or a proxy.
+        formats=[],
+        description=(snippet.get("description") or "")[:400] or None,
+        view_count=view_count,
+        like_count=like_count,
+    )
 
