@@ -316,15 +316,20 @@ async def download_instagram_video_fallback(url: str) -> tuple[Path, str]:
 # Public Invidious instances — tried in order, first valid JSON response wins.
 # These are community-run mirrors; some may be slow or return empty bodies.
 _INVIDIOUS_INSTANCES = [
-    "https://inv.nadeko.net",
-    "https://invidious.reallyaweso.me",
-    "https://yt.cdaut.de",
     "https://invidious.privacydev.net",
-    "https://invidious.io.lol",
+    "https://inv.nadeko.net",
+    "https://yt.cdaut.de",
     "https://invidious.nerdvpn.de",
-    "https://iv.datura.network",
     "https://invidious.slipfox.xyz",
+    "https://invidious.io.lol",
+    "https://invidious.reallyaweso.me",
+    "https://iv.datura.network",
     "https://invidious.flossboxin.org.in",
+    "https://invidious.jing.rocks",
+    "https://watch.oshi.at",
+    "https://vid.puffyan.us",
+    "https://invidious.fdn.fr",
+    "https://iv.melmac.space",
 ]
 
 
@@ -343,7 +348,7 @@ async def _get_invidious_instances() -> list[str]:
                     and isinstance(item[1], dict)
                     and item[1].get("api") is True
                     and item[1].get("uri", "").startswith("https")
-                ][:10]
+                ][:20]
                 if instances:
                     logger.debug(f"Got {len(instances)} live Invidious instances from API")
                     return instances
@@ -395,9 +400,11 @@ async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
                     logger.debug(f"Invidious {instance} JSON parse failed: {je} | body: {resp.text[:120]}")
                     continue
 
-                # Some instances return a JSON error object
+                # Some instances return a JSON error object (e.g. their own IP is blocked by YouTube)
                 if "error" in data:
-                    logger.debug(f"Invidious {instance} API error: {data['error']}")
+                    err_msg = data['error']
+                    logger.debug(f"Invidious {instance} API error: {err_msg}")
+                    last_error = RuntimeError(f"{instance}: {err_msg}")
                     continue
 
                 # Must have at least a title to be useful

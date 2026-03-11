@@ -64,7 +64,7 @@ async def startup_event():
     # Test bgutil server can actually generate a PO token (not just that the port is open)
     if bgutil_running:
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(timeout=20.0) as client:
                 # bgutil /get_pot with an empty body returns 4xx but proves the server is live.
                 # A connection error (not an HTTP error) means it's still starting up.
                 resp = await client.post("http://localhost:4416/get_pot", json={})

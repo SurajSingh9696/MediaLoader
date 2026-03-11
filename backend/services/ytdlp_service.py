@@ -367,11 +367,19 @@ async def get_metadata(url: str) -> VideoMetadata:
         strategies = [{}]
     
     for strategy_idx, strategy_config in enumerate(strategies):
+        base_opts = _base_ydl_opts()
         opts = {
-            **_base_ydl_opts(),
+            **base_opts,
             "skip_download": True,
             **strategy_config,
         }
+        # Deep-merge extractor_args: strategy overrides must ADD to the base
+        # instagram/tiktok/twitter keys, not replace the entire dict.
+        if "extractor_args" in strategy_config:
+            opts["extractor_args"] = {
+                **base_opts.get("extractor_args", {}),
+                **strategy_config["extractor_args"],
+            }
         
         def _extract() -> dict:
             with yt_dlp.YoutubeDL(opts) as ydl:
