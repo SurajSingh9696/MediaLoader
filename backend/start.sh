@@ -23,10 +23,18 @@ fi
 # Render kills services that don't bind a port within ~60s of starting.
 # We start uvicorn immediately so the port opens before bgutil finishes building.
 # bgutil is then set up in the background and will be ready within ~60-90s.
+#
+# IMPORTANT: use the venv Python explicitly — bare 'python' resolves to the
+# system Python which doesn't have any installed packages.
+VENV_PYTHON="/opt/render/project/src/.venv/bin/python"
+if [ ! -f "$VENV_PYTHON" ]; then
+    # Fallback: search for venv activate, or use whichever python has uvicorn
+    VENV_PYTHON=$(find /opt/render/project/src -maxdepth 4 -path "*/bin/python" -type f 2>/dev/null | head -1)
+    [ -z "$VENV_PYTHON" ] && VENV_PYTHON=$(which python3 || which python)
+fi
+echo "[start.sh] Python: $VENV_PYTHON"
 echo "[start.sh] Starting uvicorn on port ${PORT}..."
-# Guard against missing uvicorn (e.g. venv not activated) by installing inline
-python -m uvicorn --version >/dev/null 2>&1 || pip install --quiet "uvicorn[standard]"
-python -m uvicorn backend.main:app --host 0.0.0.0 --port "${PORT}" &
+"$VENV_PYTHON" -m uvicorn backend.main:app --host 0.0.0.0 --port "${PORT}" &
 UVICORN_PID=$!
 
 # ── 3. Build and start bgutil in the background ───────────────────────────
