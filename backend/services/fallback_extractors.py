@@ -4,6 +4,7 @@ Uses platform-specific libraries for YouTube and Instagram.
 """
 
 import asyncio
+import copy
 import logging
 import os
 import re
@@ -392,13 +393,13 @@ async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
                     continue
                 content_type = resp.headers.get("content-type", "")
                 if "html" in content_type:
-                    logger.debug(f"Invidious {instance} returned HTML (probably a captcha/redirect page)")
+                    logger.info(f"Invidious {instance} returned HTML (captcha/redirect page)")
                     continue
 
                 try:
                     data = resp.json()
                 except Exception as je:
-                    logger.debug(f"Invidious {instance} JSON parse failed: {je} | body: {resp.text[:120]}")
+                    logger.info(f"Invidious {instance} JSON parse failed: {je} | body: {resp.text[:120]}")
                     continue
 
                 # Some instances return a JSON error object (e.g. their own IP is blocked by YouTube)
@@ -410,7 +411,7 @@ async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
 
                 # Must have at least a title to be useful
                 if not data.get("title"):
-                    logger.debug(f"Invidious {instance} response missing title field")
+                    logger.info(f"Invidious {instance} response missing title field")
                     continue
 
                 formats: list[VideoFormat] = []
@@ -485,31 +486,39 @@ async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
 # INNERTUBE FALLBACK (direct YouTube InnerTube API via httpx — no extra deps)
 # ============================================================================
 
-# Client configs for the InnerTube /player endpoint.
-# TV_EMBED and ANDROID_MUSIC are treated by YouTube as trusted embedded/app
-# clients with lighter bot-detection than the regular web client.
+# InnerTube client configs.
+# Each entry has a per-client context (sent in the POST body) and headers
+# (sent as HTTP headers). Proper client-specific headers are required — YouTube
+# uses them alongside the context to validate the client type.
+#
+# Client order matters: we try IOS first (lightest bot-detection from cloud IPs),
+# then ANDROID, then TV_EMBED (with bgutil PO token if available), then TVHTML5.
 _INNERTUBE_CLIENTS: list[dict] = [
+    # iOS app client — treated by YouTube as a trusted native mobile app;
+    # typically has lighter server-side bot-detection than web clients.
     {
-        "name": "TV_EMBED",
+        "name": "IOS",
         "context": {
             "client": {
-                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-                "clientVersion": "2.0",
+                "clientName": "IOS",
+                "clientVersion": "19.09.3",
+                "deviceModel": "iPhone16,2",
+                "userAgent": "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4_1 like Mac OS X;)",
+                "osName": "iPhone",
+                "osVersion": "17.4.1.21E237",
+                "hl": "en",
+                "gl": "US",
+                "utcOffsetMinutes": 0,
             }
         },
-        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-    },
-    {
-        "name": "ANDROID_MUSIC",
-        "context": {
-            "client": {
-                "clientName": "ANDROID_MUSIC",
-                "clientVersion": "6.42.52",
-                "androidSdkVersion": 30,
-            }
+        "headers": {
+            "Content-Type": "application/json",
+            "User-Agent": "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4_1 like Mac OS X;)",
+            "X-YouTube-Client-Name": "5",
+            "X-YouTube-Client-Version": "19.09.3",
         },
-        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
     },
+    # Android app client
     {
         "name": "ANDROID",
         "context": {
@@ -517,21 +526,91 @@ _INNERTUBE_CLIENTS: list[dict] = [
                 "clientName": "ANDROID",
                 "clientVersion": "19.09.37",
                 "androidSdkVersion": 30,
+                "userAgent": "com.google.android.youtube/19.09.37(Linux; U; Android 11) gzip",
+                "hl": "en",
+                "gl": "US",
+                "utcOffsetMinutes": 0,
             }
         },
-        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+        "headers": {
+            "Content-Type": "application/json",
+            "User-Agent": "com.google.android.youtube/19.09.37(Linux; U; Android 11) gzip",
+            "X-YouTube-Client-Name": "3",
+            "X-YouTube-Client-Version": "19.09.37",
+        },
     },
+    # TV embedded player — bgutil was purpose-built for this client.
+    # When the local bgutil HTTP server is running, a proof-of-origin token
+    # is injected to satisfy YouTube's bot-detection from cloud IPs.
     {
-        "name": "WEB_CREATOR",
+        "name": "TV_EMBED",
         "context": {
             "client": {
-                "clientName": "WEB_CREATOR",
-                "clientVersion": "1.20230508.03.00",
+                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                "clientVersion": "2.0",
+                "hl": "en",
+                "gl": "US",
+                "utcOffsetMinutes": 0,
+            },
+            "thirdParty": {
+                "embedUrl": "https://www.youtube.com/",
+            },
+        },
+        "headers": {
+            "Content-Type": "application/json",
+            "Origin": "https://www.youtube.com",
+            "X-YouTube-Client-Name": "85",
+            "X-YouTube-Client-Version": "2.0",
+        },
+    },
+    # TV HTML5 client (non-embedded variant; also supports PO token)
+    {
+        "name": "TVHTML5",
+        "context": {
+            "client": {
+                "clientName": "TVHTML5",
+                "clientVersion": "7.20230405.08.01",
+                "hl": "en",
+                "gl": "US",
+                "utcOffsetMinutes": 0,
             }
         },
-        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+        "headers": {
+            "Content-Type": "application/json",
+            "X-YouTube-Client-Name": "7",
+            "X-YouTube-Client-Version": "7.20230405.08.01",
+        },
     },
 ]
+
+
+async def _get_bgutil_pot(video_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """
+    Fetch a proof-of-origin (PO) token from the local bgutil HTTP server.
+    Returns (po_token, visitor_data) or (None, None) if unavailable.
+    The token is injected into TV_EMBED / TVHTML5 InnerTube requests to satisfy
+    YouTube's bot-detection check from cloud/datacenter IPs.
+    """
+    try:
+        payload: dict = {}
+        if video_id:
+            payload["video_id"] = video_id
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.post(
+                "http://localhost:4416/get_pot",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                pot = data.get("po_token") or data.get("poToken")
+                vd = data.get("visitor_data") or data.get("visitorData")
+                if pot:
+                    logger.debug(f"bgutil PO token obtained for innertube (visitor_data={'present' if vd else 'absent'})")
+                    return pot, vd
+    except Exception as exc:
+        logger.debug(f"bgutil POT server unavailable for innertube: {exc}")
+    return None, None
 
 
 async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
@@ -539,12 +618,18 @@ async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
     Extract YouTube metadata via the InnerTube /player API directly using httpx.
     No extra dependencies required — uses the httpx already in requirements.
 
-    Tries TV_EMBED and ANDROID_MUSIC clients which have lighter bot-detection
-    than the standard web client. No authentication required.
+    Tries IOS, ANDROID, TV_EMBED, and TVHTML5 clients. TV_EMBED/TVHTML5
+    requests include a bgutil proof-of-origin token when the local bgutil
+    server is running, mirroring what yt-dlp does with the bgutil plugin.
     """
     video_id = _yt_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract video ID from URL: {url}")
+
+    # Try to get a PO token from the local bgutil server for TV clients.
+    pot, visitor_data = await _get_bgutil_pot(video_id)
+    if pot:
+        logger.info(f"innertube: bgutil PO token available — will inject for TV_EMBED/TVHTML5")
 
     last_exc: Exception = RuntimeError("innertube: no clients tried")
 
@@ -552,14 +637,25 @@ async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
         for cfg in _INNERTUBE_CLIENTS:
             client_name = cfg["name"]
             try:
+                # Deep-copy context so per-request mutations don't bleed across clients
+                ctx = copy.deepcopy(cfg["context"])
+                if visitor_data:
+                    ctx["client"]["visitorData"] = visitor_data
+
+                body: dict = {
+                    "videoId": video_id,
+                    "context": ctx,
+                    "racyCheckOk": True,
+                    "contentCheckOk": True,
+                }
+                # TV clients support the serviceIntegrityDimensions PO token
+                if pot and client_name in ("TV_EMBED", "TVHTML5"):
+                    body["serviceIntegrityDimensions"] = {"poToken": pot}
+
                 resp = await client.post(
                     "https://www.youtube.com/youtubei/v1/player",
-                    params={"key": cfg["api_key"]},
-                    json={
-                        "videoId": video_id,
-                        "context": cfg["context"],
-                    },
-                    headers={"Content-Type": "application/json"},
+                    json=body,
+                    headers=cfg.get("headers", {"Content-Type": "application/json"}),
                 )
             except Exception as exc:
                 logger.debug(f"innertube {client_name} request error: {exc}")
@@ -567,14 +663,14 @@ async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
                 continue
 
             if resp.status_code != 200:
-                logger.debug(f"innertube {client_name}: HTTP {resp.status_code}")
+                logger.warning(f"innertube {client_name}: HTTP {resp.status_code}")
                 last_exc = RuntimeError(f"{client_name}: HTTP {resp.status_code}")
                 continue
 
             try:
                 data = resp.json()
             except Exception as je:
-                logger.debug(f"innertube {client_name} JSON parse failed: {je}")
+                logger.warning(f"innertube {client_name} JSON parse failed: {je}")
                 last_exc = je
                 continue
 
@@ -582,7 +678,7 @@ async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
             status = playability.get("status", "")
             if status not in ("OK", "LIVE_STREAM_OFFLINE"):
                 reason = playability.get("reason", status)
-                logger.debug(f"innertube {client_name}: playabilityStatus={status} ({reason})")
+                logger.warning(f"innertube {client_name}: playabilityStatus={status!r} reason={reason!r}")
                 last_exc = RuntimeError(f"{client_name}: {reason or status}")
                 continue
 
