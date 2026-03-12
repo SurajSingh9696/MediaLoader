@@ -482,127 +482,179 @@ async def get_youtube_metadata_invidious(url: str) -> VideoMetadata:
 
 
 # ============================================================================
-# INNERTUBE FALLBACK (direct YouTube InnerTube API)
+# INNERTUBE FALLBACK (direct YouTube InnerTube API via httpx — no extra deps)
 # ============================================================================
+
+# Client configs for the InnerTube /player endpoint.
+# TV_EMBED and ANDROID_MUSIC are treated by YouTube as trusted embedded/app
+# clients with lighter bot-detection than the regular web client.
+_INNERTUBE_CLIENTS: list[dict] = [
+    {
+        "name": "TV_EMBED",
+        "context": {
+            "client": {
+                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                "clientVersion": "2.0",
+            }
+        },
+        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    },
+    {
+        "name": "ANDROID_MUSIC",
+        "context": {
+            "client": {
+                "clientName": "ANDROID_MUSIC",
+                "clientVersion": "6.42.52",
+                "androidSdkVersion": 30,
+            }
+        },
+        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    },
+    {
+        "name": "ANDROID",
+        "context": {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "19.09.37",
+                "androidSdkVersion": 30,
+            }
+        },
+        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    },
+    {
+        "name": "WEB_CREATOR",
+        "context": {
+            "client": {
+                "clientName": "WEB_CREATOR",
+                "clientVersion": "1.20230508.03.00",
+            }
+        },
+        "api_key": "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+    },
+]
+
 
 async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
     """
-    Extract YouTube metadata + stream URLs via the InnerTube API directly.
+    Extract YouTube metadata via the InnerTube /player API directly using httpx.
+    No extra dependencies required — uses the httpx already in requirements.
 
-    Uses the TV_EMBEDDED and ANDROID_MUSIC clients, which YouTube treats as
-    trusted embedded/app clients with lighter bot-detection than the web client.
-    No authentication required. Works as a fallback when yt-dlp's web/android
-    clients are blocked from cloud IPs.
+    Tries TV_EMBED and ANDROID_MUSIC clients which have lighter bot-detection
+    than the standard web client. No authentication required.
     """
-    try:
-        from innertube import InnerTube
-    except ImportError:
-        raise ImportError("innertube is not installed. Add innertube>=2.0.0 to requirements.txt")
-
     video_id = _yt_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract video ID from URL: {url}")
 
-    # Client names for innertube 2.x:
-    # TV_EMBED: embedded YouTube player client — historically light bot detection.
-    # ANDROID_MUSIC: YouTube Music Android app client — different fingerprint.
-    # ANDROID: standard Android YouTube app client.
-    # WEB_CREATOR: YouTube Studio web client — different UA from regular web.
-    _CLIENTS = ["TV_EMBED", "ANDROID_MUSIC", "ANDROID", "WEB_CREATOR"]
-
-    loop = asyncio.get_running_loop()
     last_exc: Exception = RuntimeError("innertube: no clients tried")
 
-    for client_name in _CLIENTS:
-        def _fetch(cn: str = client_name) -> dict:
-            client = InnerTube(cn)
-            # innertube 2.x: player() takes video_id as keyword argument
-            return client.player(video_id=video_id)
-
-        try:
-            data = await loop.run_in_executor(_executor, _fetch)
-        except Exception as exc:
-            logger.debug(f"innertube client {client_name} request failed: {exc}")
-            last_exc = exc
-            continue
-
-        # Check playability
-        playability = data.get("playabilityStatus", {})
-        status = playability.get("status", "")
-        if status not in ("OK", "LIVE_STREAM_OFFLINE"):
-            reason = playability.get("reason") or playability.get("errorScreen", {}).get("playerErrorMessageRenderer", {}).get("subreason", {}).get("simpleText", status)
-            logger.debug(f"innertube {client_name}: playabilityStatus={status} ({reason})")
-            last_exc = RuntimeError(f"{client_name}: {reason or status}")
-            continue
-
-        video_details = data.get("videoDetails", {})
-        streaming_data = data.get("streamingData", {})
-
-        formats: list[VideoFormat] = []
-        for f in streaming_data.get("formats", []) + streaming_data.get("adaptiveFormats", []):
-            mime = f.get("mimeType", "")
-            if not mime:
-                continue
-            is_video = "video" in mime
-            is_audio = "audio" in mime
-            ext = mime.split("/")[1].split(";")[0] if "/" in mime else "mp4"
-
-            # Prefer url; some clients use signatureCipher which we can't easily decrypt here
-            if not f.get("url"):
-                continue
-
-            qlabel = f.get("qualityLabel", "")
-            height: Optional[int] = None
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for cfg in _INNERTUBE_CLIENTS:
+            client_name = cfg["name"]
             try:
-                height = int(qlabel.rstrip("p")) if qlabel.endswith("p") else f.get("height")
+                resp = await client.post(
+                    "https://www.youtube.com/youtubei/v1/player",
+                    params={"key": cfg["api_key"]},
+                    json={
+                        "videoId": video_id,
+                        "context": cfg["context"],
+                    },
+                    headers={"Content-Type": "application/json"},
+                )
+            except Exception as exc:
+                logger.debug(f"innertube {client_name} request error: {exc}")
+                last_exc = exc
+                continue
+
+            if resp.status_code != 200:
+                logger.debug(f"innertube {client_name}: HTTP {resp.status_code}")
+                last_exc = RuntimeError(f"{client_name}: HTTP {resp.status_code}")
+                continue
+
+            try:
+                data = resp.json()
+            except Exception as je:
+                logger.debug(f"innertube {client_name} JSON parse failed: {je}")
+                last_exc = je
+                continue
+
+            playability = data.get("playabilityStatus", {})
+            status = playability.get("status", "")
+            if status not in ("OK", "LIVE_STREAM_OFFLINE"):
+                reason = playability.get("reason", status)
+                logger.debug(f"innertube {client_name}: playabilityStatus={status} ({reason})")
+                last_exc = RuntimeError(f"{client_name}: {reason or status}")
+                continue
+
+            video_details = data.get("videoDetails", {})
+            streaming_data = data.get("streamingData", {})
+
+            formats: list[VideoFormat] = []
+            for f in streaming_data.get("formats", []) + streaming_data.get("adaptiveFormats", []):
+                mime = f.get("mimeType", "")
+                if not mime:
+                    continue
+                is_video = "video" in mime
+                is_audio = "audio" in mime
+                ext = mime.split("/")[1].split(";")[0] if "/" in mime else "mp4"
+
+                # Skip cipher-protected URLs (can't decrypt without JS engine)
+                if not f.get("url"):
+                    continue
+
+                qlabel = f.get("qualityLabel", "")
+                height: Optional[int] = None
+                try:
+                    height = int(qlabel.rstrip("p")) if qlabel.endswith("p") else f.get("height")
+                except (ValueError, TypeError):
+                    height = f.get("height")
+
+                abr_val: Optional[str] = None
+                if is_audio and not is_video:
+                    bitrate = f.get("bitrate")
+                    abr_val = f"{bitrate // 1000}k" if bitrate else None
+
+                formats.append(VideoFormat(
+                    format_id=str(f.get("itag", "")),
+                    resolution=qlabel or ("audio" if is_audio and not is_video else "video"),
+                    ext=ext,
+                    filesize=int(f["contentLength"]) if f.get("contentLength") else None,
+                    vcodec=mime.split("codecs=")[-1].strip('"') if is_video and "codecs=" in mime else None,
+                    acodec=mime.split("codecs=")[-1].strip('"') if is_audio and not is_video and "codecs=" in mime else None,
+                    height=height,
+                    abr=abr_val,
+                ))
+
+            thumbnails = video_details.get("thumbnail", {}).get("thumbnails", [])
+            thumbnail = thumbnails[-1]["url"] if thumbnails else None
+
+            duration: Optional[int] = None
+            try:
+                duration = int(video_details.get("lengthSeconds", 0)) or None
             except (ValueError, TypeError):
-                height = f.get("height")
+                pass
 
-            abr_val: Optional[str] = None
-            if f.get("audioSampleRate") and is_audio and not is_video:
-                bitrate = f.get("bitrate")
-                abr_val = f"{bitrate // 1000}k" if bitrate else None
+            view_count: Optional[int] = None
+            try:
+                view_count = int(video_details.get("viewCount", 0)) or None
+            except (ValueError, TypeError):
+                pass
 
-            formats.append(VideoFormat(
-                format_id=str(f.get("itag", "")),
-                resolution=qlabel or ("audio" if is_audio and not is_video else "video"),
-                ext=ext,
-                filesize=f.get("contentLength") and int(f["contentLength"]),
-                vcodec=mime.split("codecs=")[-1].strip('"') if is_video and "codecs=" in mime else None,
-                acodec=mime.split("codecs=")[-1].strip('"') if is_audio and not is_video and "codecs=" in mime else None,
-                height=height,
-                abr=abr_val,
-            ))
-
-        thumbnails = video_details.get("thumbnail", {}).get("thumbnails", [])
-        thumbnail = thumbnails[-1]["url"] if thumbnails else None
-
-        duration: Optional[int] = None
-        try:
-            duration = int(video_details.get("lengthSeconds", 0)) or None
-        except (ValueError, TypeError):
-            pass
-
-        view_count: Optional[int] = None
-        try:
-            view_count = int(video_details.get("viewCount", 0)) or None
-        except (ValueError, TypeError):
-            pass
-
-        logger.info(f"innertube {client_name} succeeded for {video_id} ({len(formats)} formats)")
-        return VideoMetadata(
-            title=video_details.get("title", "YouTube Video"),
-            thumbnail=thumbnail,
-            duration=duration,
-            uploader=video_details.get("author"),
-            platform="YouTube",
-            url=url,
-            formats=formats,
-            description=(video_details.get("shortDescription") or "")[:400] or None,
-            view_count=view_count,
-        )
+            logger.info(f"innertube {client_name} succeeded for {video_id} ({len(formats)} formats)")
+            return VideoMetadata(
+                title=video_details.get("title", "YouTube Video"),
+                thumbnail=thumbnail,
+                duration=duration,
+                uploader=video_details.get("author"),
+                platform="YouTube",
+                url=url,
+                formats=formats,
+                description=(video_details.get("shortDescription") or "")[:400] or None,
+                view_count=view_count,
+            )
 
     raise RuntimeError(f"innertube: all clients failed. Last error: {last_exc}")
+
 
 def _parse_iso8601_duration(duration_str: str) -> Optional[int]:
     """Convert ISO 8601 duration string (e.g. PT4M13S) to total seconds."""

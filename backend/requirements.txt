@@ -19,6 +19,3 @@ yt-dlp-youtube-oauth2
 # Fallback libraries for specific platforms
 pytubefix>=6.10.0
 instaloader>=4.10.0
-# Direct InnerTube API: tries TV_EMBED/ANDROID_MUSIC clients which are less
-# aggressively blocked than web/android from cloud IPs. Zero-auth required.
-innertube>=2.0.0
