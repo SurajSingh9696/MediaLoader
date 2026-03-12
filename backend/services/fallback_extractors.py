@@ -497,16 +497,18 @@ async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
     try:
         from innertube import InnerTube
     except ImportError:
-        raise ImportError("innertube is not installed. Add innertube>=5.0.0 to requirements.txt")
+        raise ImportError("innertube is not installed. Add innertube>=2.0.0 to requirements.txt")
 
     video_id = _yt_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract video ID from URL: {url}")
 
-    # TV_EMBEDDED: used by embedded YouTube players; historically low restrictions.
-    # ANDROID_MUSIC: YouTube Music's Android client; less aggressively blocked.
-    # WEB_CREATOR: YouTube Studio client; different fingerprint from regular web.
-    _CLIENTS = ["TV_EMBEDDED", "ANDROID_MUSIC", "ANDROID", "WEB_CREATOR"]
+    # Client names for innertube 2.x:
+    # TV_EMBED: embedded YouTube player client — historically light bot detection.
+    # ANDROID_MUSIC: YouTube Music Android app client — different fingerprint.
+    # ANDROID: standard Android YouTube app client.
+    # WEB_CREATOR: YouTube Studio web client — different UA from regular web.
+    _CLIENTS = ["TV_EMBED", "ANDROID_MUSIC", "ANDROID", "WEB_CREATOR"]
 
     loop = asyncio.get_running_loop()
     last_exc: Exception = RuntimeError("innertube: no clients tried")
@@ -514,7 +516,8 @@ async def get_youtube_metadata_innertube(url: str) -> VideoMetadata:
     for client_name in _CLIENTS:
         def _fetch(cn: str = client_name) -> dict:
             client = InnerTube(cn)
-            return client.player(video_id)
+            # innertube 2.x: player() takes video_id as keyword argument
+            return client.player(video_id=video_id)
 
         try:
             data = await loop.run_in_executor(_executor, _fetch)
