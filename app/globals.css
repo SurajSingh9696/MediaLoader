@@ -1,98 +1,163 @@
-@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
-/* ─── Dark theme — warm espresso (R≥G≥B throughout, no cold blue) ── */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Theme-aware CSS variables ────────────────────────────────────────────── */
+
 :root,
 .dark {
-  --bg:            #0d0a09;   /* stone-950: R13 G10 B9 — warm near-black  */
-  --bg-subtle:     #1c1714;   /* stone-900: R28 G23 B20 — warm dark brown  */
-  --surface:       rgba(255, 243, 225, 0.058);
-  --surface-hover: rgba(255, 243, 225, 0.10);
-  --border:        rgba(255, 243, 225, 0.10);
-  --border-accent: rgba(244, 63, 94, 0.38);
-  --text:          #fdf4ed;   /* warm off-white: R253 G244 B237 */
-  --text-muted:    rgba(253, 244, 237, 0.54);
-  --text-subtle:   rgba(253, 244, 237, 0.34);
-  --accent:        #f43f5e;   /* rose-500   */
-  --accent-2:      #e879f9;   /* fuchsia-400 — brighter, warmer than d946ef */
-  --accent-3:      #fb923c;   /* orange-400 — warm tricolor finish */
-  --glow:          rgba(244, 63, 94, 0.24);
-  --scrollbar:     rgba(244, 63, 94, 0.28);
-  --scrollbar-hov: rgba(244, 63, 94, 0.52);
-  --selection:     rgba(232, 121, 249, 0.28);
+  --bg-base:     #07070f;
+  --bg-surface:  #0f0f1c;
+  --bg-elevated: #161627;
+  --bg-hover:    #1e1e33;
+
+  --text-primary:   #f0f0f8;
+  --text-secondary: #9090b0;
+  --text-muted:     #555572;
+
+  --border:        #2a2a3d;
+  --border-subtle: #1e1e2d;
+  --border-bright: #3d3d5c;
+
+  --font-inter: 'Inter', system-ui, sans-serif;
 }
 
-/* ─── Light theme — warm cream (R≥G≥B, genuine brightness) ──────── */
 .light {
-  --bg:            #fffdf8;   /* warm white: R255 G253 B248 — not cold blue */
-  --bg-subtle:     #f5ece0;   /* warm cream: R245 G236 B224 */
-  --surface:       rgba(26, 14, 6, 0.07);
-  --surface-hover: rgba(26, 14, 6, 0.13);
-  --border:        rgba(26, 14, 6, 0.14);
-  --border-accent: rgba(225, 29, 72, 0.32);
-  --text:          #1a0e06;   /* warm near-black: R26 G14 B6 */
-  --text-muted:    rgba(26, 14, 6, 0.70);
-  --text-subtle:   rgba(26, 14, 6, 0.55);
-  --accent:        #e11d48;   /* rose-600   */
-  --accent-2:      #c026d3;   /* fuchsia-600 */
-  --accent-3:      #ea580c;   /* orange-600  */
-  --glow:          rgba(225, 29, 72, 0.12);
-  --scrollbar:     rgba(225, 29, 72, 0.22);
-  --scrollbar-hov: rgba(225, 29, 72, 0.44);
-  --selection:     rgba(192, 38, 211, 0.20);
+  --bg-base:     #f5f4ff;
+  --bg-surface:  #ffffff;
+  --bg-elevated: #edeefe;
+  --bg-hover:    #e2e2f7;
+
+  --text-primary:   #1a1829;
+  --text-secondary: #50507a;
+  --text-muted:     #8888aa;
+
+  --border:        #d4d4ec;
+  --border-subtle: #e8e8f8;
+  --border-bright: #b8b8d8;
 }
 
-@theme inline {
-  --color-background: var(--bg);
-  --color-foreground: var(--text);
-}
+/* ─── Base styles ───────────────────────────────────────────────────────────── */
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-html {
-  scroll-behavior: smooth;
-}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 
 body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
-  min-height: 100dvh;
-  transition: background-color 0.35s ease, color 0.25s ease;
+  font-family: var(--font-inter);
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overscroll-behavior: none;
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
 
-/* ─── Focus ring ─────────────────────────── */
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 4px;
+/* ─── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-surface); }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #7c3aed; }
+
+/* ─── Selection ─────────────────────────────────────────────────────────────── */
+::selection { background: rgba(139,92,246,0.3); color: var(--text-primary); }
+
+/* ─── Glass morphism ────────────────────────────────────────────────────────── */
+.glass {
+  background: rgba(var(--bg-surface-rgb, 15,15,28), 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+}
+.dark .glass  { background: rgba(15,15,28,0.75); }
+.light .glass { background: rgba(255,255,255,0.85); }
+
+.glass-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+.light .glass-card {
+  background: var(--bg-surface);
+  box-shadow: 0 2px 20px rgba(139,92,246,0.07), 0 1px 3px rgba(0,0,0,0.06);
 }
 
-/* ─── Scrollbar ─────────────────────────── */
-::-webkit-scrollbar        { width: 5px; }
-::-webkit-scrollbar-track  { background: transparent; }
-::-webkit-scrollbar-thumb  { background: var(--scrollbar); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hov); }
-
-::selection {
-  background: var(--selection);
-  color: var(--text);
+/* ─── Gradient text ─────────────────────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 40%, #c084fc 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.gradient-text-amber {
+  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 50%, #d97706 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
-/* ─── Indeterminate progress ─────────────── */
-@keyframes indeterminate {
-  0%   { transform: translateX(-100%); }
-  50%  { transform: translateX(150%); }
-  100% { transform: translateX(300%); }
+/* ─── Shimmer loading ───────────────────────────────────────────────────────── */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 0%,
+    var(--bg-hover) 50%,
+    var(--bg-elevated) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
 }
 
-/* ─── Mobile helpers ────────────────────── */
-* { -webkit-tap-highlight-color: transparent; }
-html, body { -webkit-overflow-scrolling: touch; }
+/* ─── Glow pulse ────────────────────────────────────────────────────────────── */
+.glow-pulse { animation: glowPulse 2.5s ease-in-out infinite; }
+@keyframes glowPulse {
+  0%,100% { box-shadow: 0 0 15px rgba(139,92,246,0.3), 0 0 40px rgba(139,92,246,0.08); }
+  50%     { box-shadow: 0 0 25px rgba(139,92,246,0.5), 0 0 60px rgba(139,92,246,0.15); }
+}
+
+/* ─── Background orbs ───────────────────────────────────────────────────────── */
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 0;
+}
+.light .orb { opacity: 0.35; }
+
+/* ─── Progress bar ──────────────────────────────────────────────────────────── */
+.progress-bar {
+  background: linear-gradient(90deg, #7c3aed, #8b5cf6, #a78bfa);
+  background-size: 200% 100%;
+  animation: progressShimmer 1.5s linear infinite;
+}
+@keyframes progressShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ─── Platform badges ───────────────────────────────────────────────────────── */
+.badge-youtube {
+  background: rgba(239,68,68,0.15);
+  border: 1px solid rgba(239,68,68,0.3);
+  color: #f87171;
+}
+.badge-instagram {
+  background: rgba(236,72,153,0.15);
+  border: 1px solid rgba(236,72,153,0.3);
+  color: #f472b6;
+}
+
+/* ─── Format card selected ──────────────────────────────────────────────────── */
+.format-card-selected {
+  border-color: rgba(139,92,246,0.6) !important;
+  background: rgba(139,92,246,0.12) !important;
+  box-shadow: 0 0 0 1px rgba(139,92,246,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+/* ─── Shadow glow utility ───────────────────────────────────────────────────── */
+.shadow-glow-sm    { box-shadow: 0 0 10px rgba(139,92,246,0.3); }
+.shadow-glow-violet { box-shadow: 0 0 20px rgba(139,92,246,0.4), 0 0 60px rgba(139,92,246,0.1); }

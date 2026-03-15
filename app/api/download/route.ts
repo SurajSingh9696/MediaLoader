@@ -1,97 +1,84 @@
-import { NextRequest, NextResponse } from "next/server"
-import { z } from "zod"
+import { NextRequest, NextResponse } from 'next/server'
+import type { Readable } from 'stream'
+import { isYouTubeUrl, extractYouTubeId, resolveYtFormatSelector } from '@/lib/extractor/youtube'
+import { isInstagramUrl, extractInstagramShortcode } from '@/lib/extractor/instagram'
+import { streamYtDlp } from '@/lib/extractor/runner'
+import { isValidUrl } from '@/lib/utils'
+import type { ChildProcess } from 'child_process'
 
-const schema = z.object({
-  url: z
-    .string()
-    .min(1, "URL is required")
-    .url("Please provide a valid URL"),
-  type: z.enum(["video", "audio"]),
-  format_id: z.string().optional(),
-  audio_quality: z.enum(["128", "192", "320"]).optional(),
-})
-
-const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL ?? "http://localhost:8000"
-
-export async function POST(request: NextRequest) {
-  let body: unknown
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
-  }
-
-  const parsed = schema.safeParse(body)
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    )
-  }
-
-  const { url, type, format_id, audio_quality } = parsed.data
-  const endpoint = type === "audio" ? "/download/audio" : "/download/video"
-
-  try {
-    const upstream = await fetch(`${PYTHON_SERVICE_URL}${endpoint}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, format_id, audio_quality }),
-      signal: AbortSignal.timeout(300000),
-    })
-
-    if (!upstream.ok) {
-      let detail: string | undefined
-      try {
-        const errData = (await upstream.json()) as { detail?: string }
-        detail = errData?.detail
-      } catch {
-      }
-      const message = detail ?? `Media service responded with status ${upstream.status}.`
-      return NextResponse.json({ error: message }, { status: upstream.status })
-    }
-
-    if (!upstream.body) {
-      return NextResponse.json({ error: "No file data returned from media service." }, { status: 502 })
-    }
-
-    const contentType =
-      upstream.headers.get("content-type") ??
-      (type === "audio" ? "audio/mpeg" : "video/mp4")
-    const contentDisposition =
-      upstream.headers.get("content-disposition") ??
-      `attachment; filename="${type === "audio" ? "audio.mp3" : "video.mp4"}"`
-    const contentLength = upstream.headers.get("content-length")
-    const xFilename = upstream.headers.get("x-filename")
-
-    const headers = new Headers()
-    headers.set("Content-Type", contentType)
-    headers.set("Content-Disposition", contentDisposition)
-    if (contentLength) headers.set("Content-Length", contentLength)
-    if (xFilename) headers.set("X-Filename", xFilename)
-    headers.set("Cache-Control", "no-cache")
-
-    return new NextResponse(upstream.body, { status: 200, headers })
-  } catch (err: unknown) {
-    if (err instanceof Error) {
-      if (err.name === "TimeoutError" || err.name === "AbortError") {
-        return NextResponse.json(
-          { error: "Download timed out (5 min limit). Try a lower quality or shorter video." },
-          { status: 504 }
-        )
-      }
-      if (err.message.includes("ECONNREFUSED") || err.message.includes("fetch failed")) {
-        return NextResponse.json(
-          {
-            error:
-              "Media service is not running. Please start the Python backend on port 8000.",
-          },
-          { status: 503 }
-        )
-      }
-      return NextResponse.json({ error: err.message }, { status: 502 })
-    }
-    return NextResponse.json({ error: "An unexpected error occurred." }, { status: 500 })
-  }
+// Convert Node.js Readable → Web ReadableStream
+function nodeToWebStream(nodeStream: Readable, proc: ChildProcess): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      nodeStream.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+      nodeStream.on('end', () => controller.close())
+      nodeStream.on('error', (err) => { controller.error(err); proc.kill() })
+    },
+    cancel() { proc.kill() },
+  })
 }
 
+/** Resolve yt-dlp format selector from our internal formatId */
+function getFormatSelector(formatId: string): { selector: string; isAudio: boolean; ext: string } {
+  const parts = formatId.split('_')
+  const type = parts[1] // 'va' or 'ao'
+  const isAudio = type === 'ao'
+  const ext = isAudio ? 'm4a' : 'mp4'
+
+  // Handle Instagram special cases
+  if (parts[0] === 'ig') {
+    const raw = parts.slice(2).join('_')
+    if (raw === 'best') return { selector: 'bestvideo+bestaudio/best', isAudio: false, ext: 'mp4' }
+    if (raw === 'fallback') return { selector: 'bestaudio', isAudio: true, ext: 'm4a' }
+    return { selector: raw, isAudio, ext }
+  }
+
+  // YouTube — use the tier resolver
+  return { selector: resolveYtFormatSelector(formatId), isAudio, ext }
+}
+
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams
+  const url = searchParams.get('url')
+  const formatId = searchParams.get('formatId')
+
+  if (!url || !formatId) {
+    return NextResponse.json({ error: 'url and formatId are required' }, { status: 400 })
+  }
+  if (!isValidUrl(url)) {
+    return NextResponse.json({ error: 'Invalid URL' }, { status: 400 })
+  }
+
+  const isYT = isYouTubeUrl(url)
+  const isIG = isInstagramUrl(url)
+  if (!isYT && !isIG) {
+    return NextResponse.json({ error: 'Unsupported platform' }, { status: 400 })
+  }
+
+  const { selector, isAudio, ext } = getFormatSelector(formatId)
+
+  // Build filename
+  let baseName = 'media'
+  if (isYT) baseName = `yt_${extractYouTubeId(url) ?? 'video'}`
+  if (isIG) baseName = `ig_${extractInstagramShortcode(url) ?? 'video'}`
+  const filename = `${baseName}.${ext}`
+
+  const { stream, proc } = streamYtDlp([
+    '-f', selector,
+    '--no-playlist',
+    '--no-warnings',
+    '-o', '-',
+    url,
+  ])
+
+  const webStream = nodeToWebStream(stream, proc)
+
+  return new NextResponse(webStream, {
+    headers: {
+      'Content-Type': isAudio ? 'audio/mp4' : 'video/mp4',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Transfer-Encoding': 'chunked',
+      'Cache-Control': 'no-store',
+    },
+  })
+}

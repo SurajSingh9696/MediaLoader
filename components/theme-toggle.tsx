@@ -1,128 +1,42 @@
-"use client"
+'use client'
 
-import { useState, useEffect } from "react"
-import { motion, AnimatePresence } from "framer-motion"
-import { Sun, Moon } from "lucide-react"
-import { useTheme } from "@/providers/theme-provider"
+import { useTheme } from 'next-themes'
+import { useEffect, useState } from 'react'
+import { Moon, Sun } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 
-export default function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme()
+export function ThemeToggle() {
+  const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
-  useEffect(() => setMounted(true), [])
-  const isDark = theme === "dark"
 
-  if (!mounted) {
-    return (
-      <div
-        className="w-[52px] h-7 rounded-full"
-        style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
-      />
-    )
-  }
+  useEffect(() => setMounted(true), [])
+  if (!mounted) return <div className="w-9 h-9" />
+
+  const isDark = theme === 'dark'
 
   return (
     <motion.button
-      onClick={toggleTheme}
-      aria-label={`Switch to ${isDark ? "light" : "dark"} mode`}
-      whileTap={{ scale: 0.92 }}
-      className="relative flex items-center w-[52px] h-7 rounded-full p-0.5 transition-colors duration-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
-      style={{
-        background: isDark
-          ? "linear-gradient(135deg, #1c1714 0%, #2a1818 100%)"
-          : "linear-gradient(135deg, #fde68a 0%, #fed7aa 100%)",
-        boxShadow: isDark
-          ? "0 0 0 1px rgba(244,63,94,0.28), 0 2px 8px rgba(0,0,0,0.5)"
-          : "0 0 0 1px rgba(251,191,36,0.4), 0 2px 8px rgba(0,0,0,0.15)",
-      }}
+      whileTap={{ scale: 0.9 }}
+      whileHover={{ scale: 1.05 }}
+      onClick={() => setTheme(isDark ? 'light' : 'dark')}
+      className="relative w-9 h-9 rounded-xl flex items-center justify-center
+                 bg-bg-elevated border border-border text-text-secondary
+                 hover:text-violet-400 hover:border-violet-500/40 hover:bg-bg-hover
+                 transition-colors duration-200"
+      aria-label="Toggle theme"
     >
-      {/* Track twinkling stars (dark) or rays (light) */}
-      <AnimatePresence mode="wait">
-        {isDark ? (
-          <motion.span
-            key="stars"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.3 }}
-            className="absolute left-1.5 top-1 flex flex-col gap-0.5 pointer-events-none"
-          >
-            {[2, 1.5, 1].map((size, i) => (
-              <motion.span
-                key={i}
-                animate={{ opacity: [0.4, 1, 0.4], scale: [1, 1.3, 1] }}
-                transition={{ duration: 1.5 + i * 0.4, repeat: Infinity, delay: i * 0.3 }}
-                className="rounded-full bg-white"
-                style={{ width: size, height: size }}
-              />
-            ))}
-          </motion.span>
-        ) : (
-          <motion.span
-            key="rays"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.3 }}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none"
-          >
-            {[...Array(4)].map((_, i) => (
-              <motion.span
-                key={i}
-                animate={{ scaleY: [1, 1.4, 1], opacity: [0.5, 1, 0.5] }}
-                transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
-                className="absolute w-[1.5px] h-[5px] bg-amber-600/70 rounded-full origin-center"
-                style={{
-                  transform: `rotate(${i * 45}deg) translateY(-7px)`,
-                  left: "50%",
-                  top: "50%",
-                }}
-              />
-            ))}
-          </motion.span>
-        )}
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.span
+          key={isDark ? 'moon' : 'sun'}
+          initial={{ y: -10, opacity: 0, rotate: -30 }}
+          animate={{ y: 0, opacity: 1, rotate: 0 }}
+          exit={{ y: 10, opacity: 0, rotate: 30 }}
+          transition={{ duration: 0.2 }}
+          className="absolute"
+        >
+          {isDark ? <Moon size={16} /> : <Sun size={16} />}
+        </motion.span>
       </AnimatePresence>
-
-      {/* Knob */}
-      <motion.span
-        layout
-        animate={{ x: isDark ? 24 : 0 }}
-        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-        className="relative z-10 flex items-center justify-center w-6 h-6 rounded-full shadow-md"
-        style={{
-          background: isDark
-            ? "linear-gradient(135deg, #fda4af 0%, #f472b6 100%)"
-            : "linear-gradient(135deg, #fbbf24 0%, #f97316 100%)",
-          boxShadow: isDark
-            ? "0 0 8px rgba(244,63,94,0.55), 0 2px 4px rgba(0,0,0,0.35)"
-            : "0 0 8px rgba(251,191,36,0.7), 0 2px 4px rgba(0,0,0,0.15)",
-        }}
-      >
-        <AnimatePresence mode="wait">
-          {isDark ? (
-            <motion.span
-              key="moon"
-              initial={{ rotate: -90, opacity: 0, scale: 0.5 }}
-              animate={{ rotate: 0, opacity: 1, scale: 1 }}
-              exit={{ rotate: 90, opacity: 0, scale: 0.5 }}
-              transition={{ duration: 0.25, ease: "easeOut" }}
-              className="absolute"
-            >
-              <Moon className="w-3.5 h-3.5 text-rose-950" strokeWidth={2.5} />
-            </motion.span>
-          ) : (
-            <motion.span
-              key="sun"
-              initial={{ rotate: 90, opacity: 0, scale: 0.5 }}
-              animate={{ rotate: 0, opacity: 1, scale: 1 }}
-              exit={{ rotate: -90, opacity: 0, scale: 0.5 }}
-              transition={{ duration: 0.25, ease: "easeOut" }}
-              className="absolute"
-            >
-              <Sun className="w-3.5 h-3.5 text-amber-800" strokeWidth={2.5} />
-            </motion.span>
-          )}
-        </AnimatePresence>
-      </motion.span>
     </motion.button>
   )
 }

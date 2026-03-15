@@ -1,137 +1,106 @@
-"use client"
+'use client'
 
-import { motion } from "framer-motion"
-import Image from "next/image"
-import { Clock, User, Eye, ThumbsUp, ExternalLink } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
-import { formatDuration, extractPlatform } from "@/lib/utils"
-import type { VideoMetadata } from "@/lib/types"
+import Image from 'next/image'
+import { motion } from 'framer-motion'
+import { Clock, Eye, User, Youtube, Instagram, ExternalLink } from 'lucide-react'
+import { formatDuration, formatViewCount } from '@/lib/utils'
+import type { MediaInfo } from '@/lib/extractor/types'
 
 interface VideoPreviewProps {
-  metadata: VideoMetadata
+  info: MediaInfo
 }
 
-const platformColors: Record<string, string> = {
-  YouTube: "destructive",
-  Instagram: "default",
-  TikTok: "secondary",
-  "Twitter / X": "info",
-  Facebook: "info",
-  Reddit: "warning",
-  Vimeo: "success",
-  Dailymotion: "warning",
-  Twitch: "default",
-  Unknown: "secondary",
-}
-
-function formatCount(n: number | null): string {
-  if (!n) return "—"
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
-}
-
-export default function VideoPreview({ metadata }: VideoPreviewProps) {
-  const platform = extractPlatform(metadata.url)
-  const badgeVariant = (platformColors[platform] ?? "secondary") as
-    | "destructive"
-    | "default"
-    | "secondary"
-    | "success"
-    | "warning"
-    | "info"
+export function VideoPreview({ info }: VideoPreviewProps) {
+  const isYT = info.platform === 'youtube'
+  const isIG = info.platform === 'instagram'
 
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-      className="max-w-3xl mx-auto px-3 sm:px-4 pb-4 sm:pb-6"
+    <motion.div
+      initial={{ opacity: 0, y: 20, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+      className="glass-card rounded-2xl overflow-hidden"
     >
-      <div
-        className="rounded-2xl backdrop-blur-xl overflow-hidden shadow-2xl"
-        style={{ border: "1px solid var(--border)", background: "var(--surface)" }}
-      >
-        <div className="flex flex-col sm:flex-row gap-0">
-          {metadata.thumbnail && (
-            <div className="sm:w-56 md:w-64 shrink-0 relative">
-              <div className="relative aspect-video sm:aspect-auto sm:h-full min-h-36 bg-black/30">
-                <Image
-                  src={metadata.thumbnail}
-                  alt={metadata.title}
-                  fill
-                  className="object-cover"
-                  unoptimized
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent sm:hidden" />
-                {metadata.duration && (
-                  <div className="absolute bottom-2 right-2 bg-black/75 backdrop-blur-sm text-white text-xs font-mono px-2 py-0.5 rounded-md">
-                    {formatDuration(metadata.duration)}
-                  </div>
-                )}
-              </div>
+      <div className="flex flex-col sm:flex-row gap-0">
+        {/* Thumbnail */}
+        <div className="relative sm:w-52 sm:flex-shrink-0 aspect-video sm:aspect-auto overflow-hidden
+                        bg-bg-elevated">
+          {info.thumbnail ? (
+            <Image
+              src={info.thumbnail}
+              alt={info.title}
+              fill
+              className="object-cover"
+              unoptimized
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-text-muted">
+              {isYT ? <Youtube size={32} /> : <Instagram size={32} />}
             </div>
           )}
 
-          <div className="flex-1 p-4 sm:p-5 flex flex-col gap-2.5 sm:gap-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex-1 min-w-0">
-                <Badge variant={badgeVariant} className="mb-2">
-                  {platform}
-                </Badge>
-                <h2
-                  className="font-bold text-base sm:text-lg leading-snug line-clamp-2 mb-1"
-                  style={{ color: "var(--text)" }}
-                >
-                  {metadata.title}
-                </h2>
-                {metadata.uploader && (
-                  <div className="flex items-center gap-1.5 text-sm">
-                    <User className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--text-muted)" }} />
-                    <span className="truncate" style={{ color: "var(--text-muted)" }}>{metadata.uploader}</span>
-                  </div>
-                )}
-              </div>
-              <a
-                href={metadata.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="transition-colors shrink-0 mt-1"
-                style={{ color: "var(--text-subtle)" }}
-              >
-                <ExternalLink className="w-4 h-4" />
-              </a>
+          {/* Duration badge */}
+          {info.duration && info.duration > 0 && (
+            <div className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded-md
+                            bg-black/70 text-white text-xs font-mono font-medium backdrop-blur-sm">
+              {formatDuration(info.duration)}
             </div>
+          )}
 
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" style={{ color: "var(--text-muted)" }}>
-              {metadata.duration && (
-                <span className="flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5" style={{ color: "var(--accent)" }} />
-                  {formatDuration(metadata.duration)}
-                </span>
-              )}
-              {metadata.view_count && (
-                <span className="flex items-center gap-1.5">
-                  <Eye className="w-3.5 h-3.5" style={{ color: "var(--accent)" }} />
-                  {formatCount(metadata.view_count)} views
-                </span>
-              )}
-              {metadata.like_count && (
-                <span className="flex items-center gap-1.5">
-                  <ThumbsUp className="w-3.5 h-3.5" style={{ color: "var(--accent)" }} />
-                  {formatCount(metadata.like_count)} likes
-                </span>
-              )}
-            </div>
-
-            {metadata.description && (
-              <p className="text-xs leading-relaxed line-clamp-2" style={{ color: "var(--text-subtle)" }}>
-                {metadata.description}
-              </p>
-            )}
+          {/* Platform badge */}
+          <div className={`absolute top-2 left-2 flex items-center gap-1 px-2 py-1 rounded-lg
+                           text-xs font-medium backdrop-blur-sm
+                           ${isYT ? 'badge-youtube' : 'badge-instagram'}`}>
+            {isYT ? <Youtube size={10} /> : <Instagram size={10} />}
+            {isYT ? 'YouTube' : 'Instagram'}
           </div>
         </div>
+
+        {/* Info */}
+        <div className="flex-1 p-4 flex flex-col gap-2 min-w-0">
+          <h3 className="font-semibold text-text-primary text-sm leading-snug line-clamp-2">
+            {info.title}
+          </h3>
+
+          <div className="flex flex-wrap items-center gap-3 text-xs text-text-secondary">
+            {info.author && (
+              <span className="flex items-center gap-1">
+                <User size={11} />
+                {info.author}
+              </span>
+            )}
+            {info.viewCount != null && info.viewCount > 0 && (
+              <span className="flex items-center gap-1">
+                <Eye size={11} />
+                {formatViewCount(info.viewCount)}
+              </span>
+            )}
+            {info.duration != null && info.duration > 0 && (
+              <span className="flex items-center gap-1 sm:hidden">
+                <Clock size={11} />
+                {formatDuration(info.duration)}
+              </span>
+            )}
+          </div>
+
+          {info.description && (
+            <p className="text-xs text-text-muted line-clamp-2 leading-relaxed">
+              {info.description}
+            </p>
+          )}
+
+          <a
+            href={info.originalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-auto inline-flex items-center gap-1 text-xs text-violet-400
+                       hover:text-violet-300 transition-colors w-fit"
+          >
+            <ExternalLink size={11} />
+            Open original
+          </a>
+        </div>
       </div>
-    </motion.section>
+    </motion.div>
   )
 }

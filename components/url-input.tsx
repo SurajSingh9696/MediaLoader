@@ -1,166 +1,212 @@
-"use client"
+'use client'
 
-import { useEffect, useRef } from "react"
-import { motion } from "framer-motion"
-import { useForm } from "react-hook-form"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { Link2, Loader2, Search, ClipboardPaste, X } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { urlSchema, type UrlFormValues } from "@/lib/validators"
-import { cn } from "@/lib/utils"
+import { useState, useRef, useCallback } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Link2, Loader2, ArrowRight, X, Youtube, Instagram, ClipboardPaste } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import type { MediaInfo } from '@/lib/extractor/types'
 
 interface UrlInputProps {
-  onFetch: (url: string) => void
-  onReset: () => void
+  onResult: (info: MediaInfo) => void
+  onLoading: (loading: boolean) => void
   isLoading: boolean
-  hasResult: boolean
 }
 
-export default function UrlInput({ onFetch, onReset, isLoading, hasResult }: UrlInputProps) {
+function detectPlatform(url: string): 'youtube' | 'instagram' | null {
+  if (/youtube\.com|youtu\.be/.test(url)) return 'youtube'
+  if (/instagram\.com/.test(url)) return 'instagram'
+  return null
+}
+
+export function UrlInput({ onResult, onLoading, isLoading }: UrlInputProps) {
+  const [url, setUrl] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [focused, setFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const {
-    register,
-    handleSubmit,
-    setValue,
-    watch,
-    reset,
-    formState: { errors },
-  } = useForm<UrlFormValues>({
-    resolver: zodResolver(urlSchema),
-  })
+  const platform = detectPlatform(url)
 
-  const currentUrl = watch("url")
+  const handleSubmit = useCallback(async () => {
+    const trimmed = url.trim()
+    if (!trimmed) return
+    setError(null)
+    onLoading(true)
 
-  useEffect(() => {
-    const handleFocus = () => inputRef.current?.focus()
-    handleFocus()
-  }, [])
+    try {
+      const res = await fetch(`/api/info?url=${encodeURIComponent(trimmed)}`)
+      const data = await res.json()
 
-  async function handlePaste() {
+      if (!res.ok) {
+        setError(data.error ?? 'Failed to fetch video info')
+        return
+      }
+
+      onResult(data)
+    } catch {
+      setError('Network error. Please check your connection.')
+    } finally {
+      onLoading(false)
+    }
+  }, [url, onResult, onLoading])
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !isLoading) handleSubmit()
+  }
+
+  const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText()
-      if (text?.startsWith("http")) {
-        setValue("url", text.trim(), { shouldValidate: true })
-      }
+      setUrl(text)
+      setError(null)
     } catch {
+      inputRef.current?.focus()
     }
   }
 
-  function handleClear() {
-    reset()
-    onReset()
+  const clear = () => {
+    setUrl('')
+    setError(null)
     inputRef.current?.focus()
   }
 
-  function onSubmit(data: UrlFormValues) {
-    onFetch(data.url)
-  }
-
-  const inputProps = register("url")
-
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 30 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6, delay: 0.4, ease: [0.22, 1, 0.36, 1] }}
-      className="max-w-3xl mx-auto px-3 sm:px-4 pb-8 sm:pb-12"
-    >
-      <div
-        className="relative rounded-2xl backdrop-blur-xl p-4 sm:p-6"
-        style={{
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
+    <div className="w-full space-y-3">
+      {/* Input container */}
+      <motion.div
+        animate={{
+          boxShadow: focused
+            ? '0 0 0 2px rgba(139,92,246,0.5), 0 0 30px rgba(139,92,246,0.12)'
+            : error
+            ? '0 0 0 2px rgba(239,68,68,0.4)'
+            : '0 0 0 1px rgba(255,255,255,0.06)',
         }}
+        transition={{ duration: 0.2 }}
+        className="relative flex items-center rounded-2xl bg-bg-elevated overflow-hidden"
       >
-        <div
-          className="absolute inset-0 rounded-2xl pointer-events-none"
-          style={{ background: "linear-gradient(to bottom, color-mix(in srgb, var(--accent) 4%, transparent), transparent)" }}
+        {/* Left icon */}
+        <div className="pl-4 pr-2 flex-shrink-0">
+          <AnimatePresence mode="wait">
+            {platform === 'youtube' ? (
+              <motion.div key="yt" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }}>
+                <Youtube size={18} className="text-red-400" />
+              </motion.div>
+            ) : platform === 'instagram' ? (
+              <motion.div key="ig" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }}>
+                <Instagram size={18} className="text-pink-400" />
+              </motion.div>
+            ) : (
+              <motion.div key="link" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }}>
+                <Link2 size={18} className="text-text-muted" />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Input */}
+        <input
+          ref={inputRef}
+          type="url"
+          value={url}
+          onChange={e => { setUrl(e.target.value); setError(null) }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={handleKey}
+          placeholder="Paste YouTube or Instagram URL…"
+          className="flex-1 bg-transparent text-text-primary placeholder:text-text-muted
+                     text-sm py-4 pr-2 outline-none min-w-0"
+          disabled={isLoading}
+          autoComplete="off"
+          spellCheck={false}
         />
 
-        <form onSubmit={handleSubmit(onSubmit)} className="relative flex flex-col gap-3 sm:gap-4">
-          <div className="flex flex-col sm:flex-row gap-2.5 sm:gap-3">
-            <div className="relative flex-1">
-              <Link2
-                className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none"
-                style={{ color: "var(--text-subtle)" }}
-              />
-              <Input
-                {...inputProps}
-                ref={(e) => {
-                  inputProps.ref(e)
-                  ;(inputRef as React.MutableRefObject<HTMLInputElement | null>).current = e
-                }}
-                type="url"
-                placeholder="Paste a video URL here..."
-                className="pl-10 pr-10 h-12 sm:h-13 text-base"
-                disabled={isLoading}
-              />
-              {currentUrl && (
-                <button
-                  type="button"
-                  onClick={handleClear}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
-                  style={{ color: "var(--text-subtle)" }}
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-
-            <Button
-              type="submit"
-              size="lg"
-              variant="secondary"
-              disabled={isLoading}
-              className="w-full sm:w-auto shrink-0 h-12 sm:h-13"
+        {/* Right controls */}
+        <div className="flex items-center gap-1 pr-2 flex-shrink-0">
+          {url && !isLoading && (
+            <motion.button
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0, opacity: 0 }}
+              whileTap={{ scale: 0.85 }}
+              onClick={clear}
+              className="w-7 h-7 rounded-lg flex items-center justify-center
+                         text-text-muted hover:text-text-secondary hover:bg-bg-hover
+                         transition-colors"
             >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Fetching...
-                </>
-              ) : (
-                <>
-                  <Search className="w-4 h-4" />
-                  Fetch Video
-                </>
-              )}
-            </Button>
-          </div>
-
-          {errors.url && (
-            <motion.p
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-sm text-red-400 flex items-center gap-1.5"
-            >
-              <span className="inline-block w-1 h-1 rounded-full bg-red-400" />
-              {errors.url.message}
-            </motion.p>
+              <X size={13} />
+            </motion.button>
           )}
 
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3 pt-0.5">
-            <button
-              type="button"
+          {!url && (
+            <motion.button
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              whileTap={{ scale: 0.9 }}
               onClick={handlePaste}
-              className={cn(
-                "flex items-center gap-1.5 text-xs transition-colors py-1.5 px-2.5 rounded-lg"
-              )}
-              style={{ color: "var(--text-muted)" }}
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg
+                         text-xs text-text-muted hover:text-violet-400 hover:bg-violet-500/10
+                         transition-colors border border-transparent hover:border-violet-500/20"
             >
-              <ClipboardPaste className="w-3.5 h-3.5" />
-              Paste from clipboard
-            </button>
-            <span className="text-xs hidden sm:block" style={{ color: "var(--text-subtle)" }}>•</span>
-            <span className="text-xs" style={{ color: "var(--text-subtle)" }}>
-              YouTube · TikTok · Instagram · Twitter · and more
-            </span>
-          </div>
-        </form>
-      </div>
-    </motion.section>
+              <ClipboardPaste size={12} />
+              <span>Paste</span>
+            </motion.button>
+          )}
+
+          {/* Submit button */}
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleSubmit}
+            disabled={!url.trim() || isLoading}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold',
+              'transition-all duration-200',
+              url.trim() && !isLoading
+                ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white hover:from-violet-500 hover:to-purple-500 shadow-glow-sm cursor-pointer'
+                : 'bg-bg-hover text-text-muted cursor-not-allowed'
+            )}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                <span className="hidden sm:inline">Fetching</span>
+              </>
+            ) : (
+              <>
+                <span className="hidden sm:inline">Analyze</span>
+                <ArrowRight size={14} />
+              </>
+            )}
+          </motion.button>
+        </div>
+      </motion.div>
+
+      {/* Error message */}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.97 }}
+            className="flex items-start gap-2 px-4 py-3 rounded-xl
+                       bg-red-500/10 border border-red-500/20 text-red-400 text-sm"
+          >
+            <X size={14} className="mt-0.5 flex-shrink-0" />
+            <span>{error}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Supported platforms hint */}
+      {!url && !error && (
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.3 }}
+          className="text-center text-xs text-text-muted"
+        >
+          Supports YouTube videos, Shorts, playlists &amp; Instagram posts, Reels
+        </motion.p>
+      )}
+    </div>
   )
 }
