@@ -9,6 +9,7 @@ import type { MediaInfo } from '@/lib/extractor/types'
 interface UrlInputProps {
   onResult: (info: MediaInfo) => void
   onLoading: (loading: boolean) => void
+  onSearchStart: () => void
   isLoading: boolean
 }
 
@@ -18,7 +19,7 @@ function detectPlatform(url: string): 'youtube' | 'instagram' | null {
   return null
 }
 
-export function UrlInput({ onResult, onLoading, isLoading }: UrlInputProps) {
+export function UrlInput({ onResult, onLoading, onSearchStart, isLoading }: UrlInputProps) {
   const [url, setUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [focused, setFocused] = useState(false)
@@ -30,6 +31,7 @@ export function UrlInput({ onResult, onLoading, isLoading }: UrlInputProps) {
     const trimmed = url.trim()
     if (!trimmed) return
     setError(null)
+    onSearchStart()
     onLoading(true)
 
     try {
@@ -47,7 +49,7 @@ export function UrlInput({ onResult, onLoading, isLoading }: UrlInputProps) {
     } finally {
       onLoading(false)
     }
-  }, [url, onResult, onLoading])
+  }, [url, onResult, onLoading, onSearchStart])
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !isLoading) handleSubmit()
@@ -75,7 +77,7 @@ export function UrlInput({ onResult, onLoading, isLoading }: UrlInputProps) {
       <motion.div
         animate={{
           boxShadow: focused
-            ? '0 0 0 2px rgba(139,92,246,0.5), 0 0 30px rgba(139,92,246,0.12)'
+            ? '0 0 0 2px rgba(14,165,233,0.45), 0 0 30px rgba(37,99,235,0.12)'
             : error
             ? '0 0 0 2px rgba(239,68,68,0.4)'
             : '0 0 0 1px rgba(255,255,255,0.06)',
@@ -143,8 +145,8 @@ export function UrlInput({ onResult, onLoading, isLoading }: UrlInputProps) {
               whileTap={{ scale: 0.9 }}
               onClick={handlePaste}
               className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg
-                         text-xs text-text-muted hover:text-violet-400 hover:bg-violet-500/10
-                         transition-colors border border-transparent hover:border-violet-500/20"
+                         text-xs text-text-muted hover:text-sky-500 hover:bg-sky-500/10
+                         transition-colors border border-transparent hover:border-sky-500/20"
             >
               <ClipboardPaste size={12} />
               <span>Paste</span>
@@ -161,7 +163,7 @@ export function UrlInput({ onResult, onLoading, isLoading }: UrlInputProps) {
               'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold',
               'transition-all duration-200',
               url.trim() && !isLoading
-                ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white hover:from-violet-500 hover:to-purple-500 shadow-glow-sm cursor-pointer'
+                ? 'bg-gradient-to-r from-sky-600 to-blue-700 text-white hover:from-sky-500 hover:to-blue-600 shadow-glow-sm cursor-pointer'
                 : 'bg-bg-hover text-text-muted cursor-not-allowed'
             )}
           >

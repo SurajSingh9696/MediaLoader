@@ -11,7 +11,7 @@
  * This extractor works for public posts/reels only.
  */
 
-import { runYtDlp, streamYtDlp } from './runner'
+import { runYtDlp } from './runner'
 import type { MediaInfo, MediaFormat, ExtractorResult } from './types'
 
 // ─── URL helpers ────────────────────────────────────────────────────────────
@@ -37,6 +37,20 @@ export function extractInstagramShortcode(url: string): string | null {
 
 export function isInstagramUrl(url: string): boolean {
   return extractInstagramShortcode(url) !== null
+}
+
+function normalizeInstagramUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (!/instagram\.com$/i.test(parsed.hostname) && !/\.instagram\.com$/i.test(parsed.hostname)) {
+      return url
+    }
+
+    // Remove share tracking params/hash; keep only canonical path.
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}/`
+  } catch {
+    return url
+  }
 }
 
 type InstagramPostType = 'post' | 'reel' | 'tv'
@@ -77,7 +91,10 @@ async function fetchOEmbed(url: string): Promise<OEmbedData | null> {
     const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&maxwidth=640`
     const res = await fetch(oembedUrl, { headers: { 'User-Agent': BROWSER_HEADERS['User-Agent'] } })
     if (!res.ok) return null
-    return res.json() as Promise<OEmbedData>
+    const contentType = res.headers.get('content-type') ?? ''
+    if (!contentType.toLowerCase().includes('application/json')) return null
+    const data = await res.json() as OEmbedData
+    return data
   } catch {
     return null
   }
@@ -91,45 +108,76 @@ interface EmbedScrapedData {
 }
 
 async function scrapeEmbedPage(shortcode: string): Promise<EmbedScrapedData> {
-  const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/captioned/`
+  const embedUrls = [
+    `https://www.instagram.com/reel/${shortcode}/embed/captioned/`,
+    `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
+  ]
+
+  for (const embedUrl of embedUrls) {
+    try {
+      const res = await fetch(embedUrl, { headers: BROWSER_HEADERS })
+      if (!res.ok) continue
+      const html = await res.text()
+
+      const result: EmbedScrapedData = {}
+
+      // Extract video_url from the embed HTML (Instagram puts it in a JSON blob)
+      const videoUrlPatterns = [
+        /video_url":"(https:[^"]+)"/,
+        /"video_url":"([^"]+)"/,
+        /src="(https:\/\/[^\"]*\.mp4[^\"]*)"/,
+      ]
+      for (const p of videoUrlPatterns) {
+        const m = html.match(p)
+        if (m?.[1]) {
+          result.videoUrl = m[1].replace(/\\u0026/g, '&').replace(/\\/g, '')
+          break
+        }
+      }
+
+      // Extract thumbnail / display_url
+      const thumbPatterns = [
+        /"display_url":"([^"]+)"/,
+        /display_url":"(https:[^"]+)"/,
+      ]
+      for (const p of thumbPatterns) {
+        const m = html.match(p)
+        if (m?.[1]) {
+          result.thumbnailUrl = m[1].replace(/\\u0026/g, '&').replace(/\\/g, '')
+          break
+        }
+      }
+
+      if (result.videoUrl || result.thumbnailUrl) return result
+    } catch {
+      // Try next embed variant.
+    }
+  }
+
+  return {}
+}
+
+async function scrapePostPageForVideo(url: string): Promise<string | null> {
   try {
-    const res = await fetch(embedUrl, { headers: BROWSER_HEADERS })
-    if (!res.ok) return {}
+    const res = await fetch(url, { headers: BROWSER_HEADERS })
+    if (!res.ok) return null
     const html = await res.text()
 
-    const result: EmbedScrapedData = {}
-
-    // Extract video_url from the embed HTML (Instagram puts it in a JSON blob)
-    const videoUrlPatterns = [
-      /video_url":"(https:[^"]+)"/,
+    const patterns = [
       /"video_url":"([^"]+)"/,
-      /src="(https:\/\/[^"]*\.mp4[^"]*)"/,
+      /property="og:video"\s+content="([^"]+)"/,
+      /"contentUrl":"([^"]+)"/,
+      /"video_versions":\[\{"type":\d+,"url":"([^"]+)"/,
     ]
-    for (const p of videoUrlPatterns) {
-      const m = html.match(p)
-      if (m?.[1]) {
-        result.videoUrl = m[1].replace(/\\u0026/g, '&').replace(/\\/g, '')
-        break
-      }
-    }
 
-    // Extract thumbnail / display_url
-    const thumbPatterns = [
-      /"display_url":"([^"]+)"/,
-      /display_url":"(https:[^"]+)"/,
-    ]
-    for (const p of thumbPatterns) {
+    for (const p of patterns) {
       const m = html.match(p)
-      if (m?.[1]) {
-        result.thumbnailUrl = m[1].replace(/\\u0026/g, '&').replace(/\\/g, '')
-        break
-      }
+      if (m?.[1]) return m[1].replace(/\\u0026/g, '&').replace(/\\/g, '')
     }
-
-    return result
   } catch {
-    return {}
+    // Ignore and return null.
   }
+  return null
 }
 
 // ─── Approach 3 — GraphQL / query endpoint ───────────────────────────────────
@@ -144,43 +192,52 @@ interface GraphQLData {
 }
 
 async function fetchGraphQL(shortcode: string): Promise<GraphQLData | null> {
-  // Try the unofficial ?__a=1 endpoint
-  try {
-    const apiUrl = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`
-    const res = await fetch(apiUrl, {
-      headers: {
-        ...BROWSER_HEADERS,
-        Accept: 'application/json',
-        'X-IG-App-ID': '936619743392459',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-    })
-    if (!res.ok) return null
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const json: any = await res.json()
+  const paths = ['reel', 'p']
 
-    const media =
-      json?.graphql?.shortcode_media ??
-      json?.items?.[0]
+  for (const path of paths) {
+    try {
+      const apiUrl = `https://www.instagram.com/${path}/${shortcode}/?__a=1&__d=dis`
+      const res = await fetch(apiUrl, {
+        headers: {
+          ...BROWSER_HEADERS,
+          Accept: 'application/json',
+          'X-IG-App-ID': '936619743392459',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      })
+      if (!res.ok) continue
 
-    if (!media) return null
+      const contentType = res.headers.get('content-type') ?? ''
+      if (!contentType.toLowerCase().includes('application/json')) continue
 
-    const isVideo = media.is_video || media.media_type === 2
-    if (!isVideo) return null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const json: any = await res.json()
 
-    return {
-      videoUrl: media.video_url,
-      thumbnailUrl:
-        media.thumbnail_src ||
-        media.image_versions2?.candidates?.[0]?.url,
-      title: media.title || media.edge_media_to_caption?.edges?.[0]?.node?.text,
-      owner: media.owner?.username,
-      viewCount: media.video_view_count,
-      duration: media.video_duration,
+      const media =
+        json?.graphql?.shortcode_media ??
+        json?.items?.[0]
+
+      if (!media) continue
+
+      const isVideo = media.is_video || media.media_type === 2
+      if (!isVideo) continue
+
+      return {
+        videoUrl: media.video_url,
+        thumbnailUrl:
+          media.thumbnail_src ||
+          media.image_versions2?.candidates?.[0]?.url,
+        title: media.title || media.edge_media_to_caption?.edges?.[0]?.node?.text,
+        owner: media.owner?.username,
+        viewCount: media.video_view_count,
+        duration: media.video_duration,
+      }
+    } catch {
+      // Try next endpoint variant.
     }
-  } catch {
-    return null
   }
+
+  return null
 }
 
 // ─── yt-dlp extractor (primary) ──────────────────────────────────────────────
@@ -318,24 +375,28 @@ async function getInstagramViaYtDlp(url: string): Promise<ExtractorResult | null
 // ─── Main extractor ───────────────────────────────────────────────────────────
 
 export async function getInstagramInfo(url: string): Promise<ExtractorResult> {
-  const shortcode = extractInstagramShortcode(url)
+  const normalizedUrl = normalizeInstagramUrl(url)
+  const shortcode = extractInstagramShortcode(normalizedUrl)
   if (!shortcode) return { success: false, error: 'Invalid Instagram URL' }
 
   // Try yt-dlp first (most reliable)
-  const ytdlpResult = await getInstagramViaYtDlp(url)
-  // If yt-dlp returned a definitive error (e.g. auth required), stop here
-  if (ytdlpResult && !ytdlpResult.success) return ytdlpResult
+  const ytdlpResult = await getInstagramViaYtDlp(normalizedUrl)
   // If yt-dlp succeeded, return immediately
   if (ytdlpResult?.success) return ytdlpResult
+  const ytdlpError = ytdlpResult && !ytdlpResult.success ? ytdlpResult.error : null
 
   const postType = getPostType(url)
 
   // Run parallel fallback requests
-  const [oEmbed, embedData, graphqlData] = await Promise.all([
-    fetchOEmbed(url),
+  const [oEmbedResult, embedResult, graphResult] = await Promise.allSettled([
+    fetchOEmbed(normalizedUrl),
     scrapeEmbedPage(shortcode),
     fetchGraphQL(shortcode),
   ])
+
+  const oEmbed = oEmbedResult.status === 'fulfilled' ? oEmbedResult.value : null
+  const embedData = embedResult.status === 'fulfilled' ? embedResult.value : {}
+  const graphqlData = graphResult.status === 'fulfilled' ? graphResult.value : null
 
   // Determine video URL (prefer GraphQL > embed scraping)
   const videoUrl = graphqlData?.videoUrl ?? embedData.videoUrl
@@ -343,7 +404,7 @@ export async function getInstagramInfo(url: string): Promise<ExtractorResult> {
   if (!videoUrl) {
     return {
       success: false,
-      error:
+      error: ytdlpError ??
         'Instagram requires login to access this content. Only fully public posts/Reels (visible without an account) can be downloaded. Private accounts and login-gated content are not supported.',
     }
   }
@@ -366,7 +427,7 @@ export async function getInstagramInfo(url: string): Promise<ExtractorResult> {
   // Build formats  — Instagram typically serves a single MP4 with audio
   const formats: MediaFormat[] = [
     {
-      id: `ig_va_mp4`,
+      id: 'ig_va_best',
       type: 'videoaudio',
       quality: '720p',
       qualityLabel: 'Best Quality · MP4',
@@ -376,7 +437,7 @@ export async function getInstagramInfo(url: string): Promise<ExtractorResult> {
       url: videoUrl,
     },
     {
-      id: 'ig_ao_mp4',
+      id: 'ig_ao_fallback',
       type: 'audioonly',
       quality: 'best',
       qualityLabel: 'Audio Only · M4A',
@@ -396,8 +457,30 @@ export async function getInstagramInfo(url: string): Promise<ExtractorResult> {
     author,
     viewCount: graphqlData?.viewCount,
     formats,
-    originalUrl: url,
+    originalUrl: normalizedUrl,
   }
 
   return { success: true, data: mediaInfo }
+}
+
+/**
+ * Instagram-only fallback resolver used by /api/download when yt-dlp fails.
+ * Returns a direct MP4 URL if any public source exposes it.
+ */
+export async function resolveInstagramDirectMediaUrl(url: string): Promise<string | null> {
+  const normalizedUrl = normalizeInstagramUrl(url)
+  const shortcode = extractInstagramShortcode(normalizedUrl)
+  if (!shortcode) return null
+
+  const [graphResult, embedResult, pageResult] = await Promise.allSettled([
+    fetchGraphQL(shortcode),
+    scrapeEmbedPage(shortcode),
+    scrapePostPageForVideo(normalizedUrl),
+  ])
+
+  const graphUrl = graphResult.status === 'fulfilled' ? graphResult.value?.videoUrl : null
+  const embedUrl = embedResult.status === 'fulfilled' ? embedResult.value.videoUrl : null
+  const pageUrl = pageResult.status === 'fulfilled' ? pageResult.value : null
+
+  return graphUrl ?? embedUrl ?? pageUrl ?? null
 }

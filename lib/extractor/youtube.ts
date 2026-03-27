@@ -1,9 +1,13 @@
 /**
  * YouTube Extractor — yt-dlp backend
  * Uses quality tiers with ffmpeg-static for proper video+audio merging.
+ *
+ * IMPORTANT: yt-dlp filter syntax uses separate bracket groups for AND:
+ *   VALID:   bestvideo[height<=1080][ext=mp4]
+ *   INVALID: bestvideo[height<=1080,ext=mp4]   ← comma is OR separator outside brackets
  */
 
-import { runYtDlp, streamYtDlp } from './runner'
+import { runYtDlp } from './runner'
 import type { MediaInfo, MediaFormat, ExtractorResult } from './types'
 
 // ─── URL helpers ──────────────────────────────────────────────────────────────
@@ -26,82 +30,156 @@ export function isYouTubeUrl(url: string): boolean {
 }
 
 // ─── Quality tier definitions ─────────────────────────────────────────────────
+// NOTE: Filters inside [] must use separate bracket groups, NOT commas.
 
 const VIDEO_TIERS = [
-  { height: 2160, label: '4K (2160p)', selector: 'bestvideo[height<=2160,ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]' },
-  { height: 1440, label: '1440p QHD',  selector: 'bestvideo[height<=1440,ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]' },
-  { height: 1080, label: '1080p FHD',  selector: 'bestvideo[height<=1080,ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]' },
-  { height: 720,  label: '720p HD',    selector: 'bestvideo[height<=720,ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]' },
-  { height: 480,  label: '480p SD',    selector: 'bestvideo[height<=480,ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]' },
-  { height: 360,  label: '360p',       selector: 'bestvideo[height<=360,ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]' },
+  { height: 2160, label: '4K (2160p)', selector: 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]' },
+  { height: 1440, label: '1440p QHD',  selector: 'bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]' },
+  { height: 1080, label: '1080p FHD',  selector: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]' },
+  { height: 720,  label: '720p HD',    selector: 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]' },
+  { height: 480,  label: '480p SD',    selector: 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]' },
+  { height: 360,  label: '360p',       selector: 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]' },
 ] as const
 
 const AUDIO_TIERS = [
-  { kbps: 320, label: 'Best Quality · M4A',    selector: 'bestaudio[ext=m4a]/bestaudio' },
-  { kbps: 128, label: '~128 kbps · M4A', selector: 'bestaudio[abr<=132,ext=m4a]/bestaudio[abr<=132]/bestaudio' },
-  { kbps: 64,  label: '~64 kbps · M4A',  selector: 'bestaudio[abr<=72,ext=m4a]/bestaudio[abr<=72]/bestaudio' },
+  { kbps: 320, label: 'Best Quality · M4A', selector: 'bestaudio[ext=m4a]/bestaudio' },
+  { kbps: 128, label: '~128 kbps · M4A',    selector: 'bestaudio[abr<=132][ext=m4a]/bestaudio[abr<=132]/bestaudio' },
+  { kbps: 64,  label: '~64 kbps · M4A',     selector: 'bestaudio[abr<=72][ext=m4a]/bestaudio[abr<=72]/bestaudio' },
 ] as const
 
 // ─── yt-dlp types ─────────────────────────────────────────────────────────────
 
 interface RawFormat {
   format_id: string
-  vcodec?: string
-  acodec?: string
-  height?: number
-  abr?: number
+  ext:       string
+  vcodec?:   string
+  acodec?:   string
+  height?:   number
+  abr?:      number   // audio bitrate kbps
+  tbr?:      number   // total bitrate kbps
+  filesize?:       number
+  filesize_approx?: number
+  url?:      string
 }
 
 interface RawInfo {
-  id: string
-  title: string
+  id:           string
+  title:        string
   description?: string
-  thumbnail?: string
-  duration?: number
-  view_count?: number
-  uploader?: string
-  formats?: RawFormat[]
+  thumbnail?:   string
+  duration?:    number
+  view_count?:  number
+  uploader?:    string
+  formats?:     RawFormat[]
+}
+
+// ─── Size estimation ──────────────────────────────────────────────────────────
+
+/**
+ * Estimate combined file size for a quality tier.
+ * Picks the best video format at <= targetHeight and best audio,
+ * uses tbr * duration to estimate bytes.
+ */
+function estimateTierSize(
+  fmts: RawFormat[],
+  targetHeight: number,
+  duration: number
+): number | undefined {
+  if (!duration) return undefined
+
+  const videoFmt = fmts
+    .filter(f => f.vcodec && f.vcodec !== 'none' && f.height && f.height <= targetHeight)
+    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0]
+
+  const audioFmt = fmts
+    .filter(f => (!f.vcodec || f.vcodec === 'none') && f.acodec && f.acodec !== 'none')
+    .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+
+  if (!videoFmt && !audioFmt) return undefined
+
+  // Use known filesize if available, else estimate from bitrate
+  const videoBytes =
+    videoFmt?.filesize ??
+    videoFmt?.filesize_approx ??
+    (videoFmt?.tbr ? (videoFmt.tbr * 1000 * duration) / 8 : 0)
+
+  const audioBytes =
+    audioFmt?.filesize ??
+    audioFmt?.filesize_approx ??
+    (audioFmt?.tbr ? (audioFmt.tbr * 1000 * duration) / 8 : 0)
+
+  return Math.round(videoBytes + audioBytes)
+}
+
+function estimateAudioSize(
+  fmts: RawFormat[],
+  maxKbps: number,
+  duration: number
+): number | undefined {
+  if (!duration) return undefined
+
+  const fmt = fmts
+    .filter(f => (!f.vcodec || f.vcodec === 'none') && f.acodec && f.acodec !== 'none' && (f.abr ?? 0) <= maxKbps + 20)
+    .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+
+  if (!fmt) return undefined
+  return fmt.filesize ?? fmt.filesize_approx ?? (fmt.tbr ? Math.round((fmt.tbr * 1000 * duration) / 8) : undefined)
+}
+
+function findMuxedUrlAtHeight(fmts: RawFormat[], targetHeight: number): string | undefined {
+  const fmt = fmts
+    .filter(f => f.url && f.vcodec && f.vcodec !== 'none' && f.acodec && f.acodec !== 'none' && (f.height ?? 0) <= targetHeight)
+    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0]
+  return fmt?.url
+}
+
+function findAudioUrlByTier(fmts: RawFormat[], maxKbps: number): string | undefined {
+  const fmt = fmts
+    .filter(f => f.url && (!f.vcodec || f.vcodec === 'none') && f.acodec && f.acodec !== 'none' && (f.abr ?? 0) <= maxKbps + 20)
+    .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+  return fmt?.url
 }
 
 // ─── Format builder ───────────────────────────────────────────────────────────
 
-function buildFormats(rawFmts: RawFormat[]): MediaFormat[] {
+function buildFormats(rawFmts: RawFormat[], duration?: number): MediaFormat[] {
   const result: MediaFormat[] = []
 
-  // Available video heights (muxed and video-only)
+  // Available video heights (muxed + video-only)
   const videoHeights = new Set<number>(
     rawFmts.filter(f => f.vcodec && f.vcodec !== 'none' && f.height).map(f => f.height!)
   )
 
-  // Offer only quality tiers for which the video has a stream at that height
   for (const tier of VIDEO_TIERS) {
     if (![...videoHeights].some(h => h >= tier.height)) continue
     result.push({
-      id: `yt_va_${tier.height}`,
-      type: 'videoaudio',
-      quality: `${tier.height}p`,
+      id:           `yt_va_${tier.height}`,
+      type:         'videoaudio',
+      quality:      `${tier.height}p`,
       qualityLabel: `${tier.label} · MP4`,
-      container: 'mp4',
-      hasAudio: true,
-      hasVideo: true,
+      container:    'mp4',
+      hasAudio:     true,
+      hasVideo:     true,
+      filesize:     duration ? estimateTierSize(rawFmts, tier.height, duration) : undefined,
+      url:          findMuxedUrlAtHeight(rawFmts, tier.height),
     })
   }
 
-  // Audio tiers — only if audio streams exist
   const hasAudio = rawFmts.some(f => f.acodec && f.acodec !== 'none')
   if (hasAudio) {
     const maxAbr = Math.max(...rawFmts.filter(f => f.abr).map(f => f.abr!))
     for (const tier of AUDIO_TIERS) {
-      // Skip low-quality tiers if the video doesn't even have that bitrate
       if (tier.kbps !== 320 && tier.kbps > maxAbr + 20) continue
       result.push({
-        id: `yt_ao_${tier.kbps}`,
-        type: 'audioonly',
-        quality: `~${tier.kbps} kbps`,
+        id:           `yt_ao_${tier.kbps}`,
+        type:         'audioonly',
+        quality:      `~${tier.kbps} kbps`,
         qualityLabel: tier.label,
-        container: 'm4a',
-        hasAudio: true,
-        hasVideo: false,
+        container:    'm4a',
+        hasAudio:     true,
+        hasVideo:     false,
+        filesize:     duration ? estimateAudioSize(rawFmts, tier.kbps, duration) : undefined,
+        url:          findAudioUrlByTier(rawFmts, tier.kbps),
       })
     }
   }
@@ -117,7 +195,7 @@ export async function getYouTubeInfo(url: string): Promise<ExtractorResult> {
   try {
     const raw = await runYtDlp(['--dump-json', '--no-playlist', '--no-warnings', url])
     const info: RawInfo = JSON.parse(raw.trim().split('\n')[0])
-    const formats = buildFormats(info.formats ?? [])
+    const formats = buildFormats(info.formats ?? [], info.duration)
 
     if (formats.length === 0) {
       return { success: false, error: 'No downloadable formats found for this video.' }
@@ -126,14 +204,14 @@ export async function getYouTubeInfo(url: string): Promise<ExtractorResult> {
     return {
       success: true,
       data: {
-        platform: 'youtube',
-        id: info.id,
-        title: info.title,
+        platform:    'youtube',
+        id:          info.id,
+        title:       info.title,
         description: info.description?.slice(0, 300),
-        thumbnail: info.thumbnail ?? '',
-        duration: info.duration,
-        author: info.uploader,
-        viewCount: info.view_count,
+        thumbnail:   info.thumbnail ?? '',
+        duration:    info.duration,
+        author:      info.uploader,
+        viewCount:   info.view_count,
         formats,
         originalUrl: url,
       },
@@ -153,9 +231,9 @@ export async function getYouTubeInfo(url: string): Promise<ExtractorResult> {
 
 /** Resolve internal formatId → yt-dlp format selector string */
 export function resolveYtFormatSelector(formatId: string): string {
-  const parts = formatId.split('_')  // ['yt', 'va'|'ao', '1080'|'320']
-  const type = parts[1]
-  const key = parseInt(parts[2])
+  const parts = formatId.split('_')   // ['yt', 'va'|'ao', '1080'|'320']
+  const type  = parts[1]
+  const key   = parseInt(parts[2])
 
   if (type === 'va') {
     const tier = VIDEO_TIERS.find(t => t.height === key)
@@ -163,8 +241,4 @@ export function resolveYtFormatSelector(formatId: string): string {
   }
   const tier = AUDIO_TIERS.find(t => t.kbps === key)
   return tier?.selector ?? 'bestaudio[ext=m4a]/bestaudio'
-}
-
-export function getYouTubeDownloadStream(url: string, formatSelector: string) {
-  return streamYtDlp(['-f', formatSelector, '--no-playlist', '--no-warnings', '-o', '-', url])
 }

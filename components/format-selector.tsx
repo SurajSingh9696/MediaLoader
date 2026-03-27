@@ -27,7 +27,7 @@ function QualityTag({ quality }: { quality: string }) {
       className={cn(
         'text-[10px] font-bold px-1.5 py-0.5 rounded-md leading-none',
         isHD
-          ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
+          ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
           : is720
           ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
           : isAudio
@@ -68,7 +68,7 @@ export function FormatSelector({ formats, selectedId, onSelect }: FormatSelector
               className={cn(
                 'flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200',
                 active
-                  ? 'bg-violet-600 text-white shadow-glow-sm'
+                  ? 'bg-blue-700 text-white shadow-glow-sm'
                   : 'text-text-secondary hover:text-text-primary hover:bg-bg-hover'
               )}
             >
@@ -117,7 +117,7 @@ export function FormatSelector({ formats, selectedId, onSelect }: FormatSelector
                     'border transition-all duration-200 cursor-pointer',
                     selected
                       ? 'format-card-selected'
-                      : 'bg-bg-elevated border-border hover:border-violet-500/30 hover:bg-bg-hover'
+                      : 'bg-bg-elevated border-border hover:border-sky-500/30 hover:bg-bg-hover'
                   )}
                 >
                   {/* Check mark */}
@@ -126,7 +126,7 @@ export function FormatSelector({ formats, selectedId, onSelect }: FormatSelector
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
                       className="absolute top-2.5 right-2.5 w-5 h-5 rounded-full
-                                 bg-violet-500 flex items-center justify-center"
+                                 bg-blue-600 flex items-center justify-center"
                     >
                       <Check size={11} className="text-white" strokeWidth={3} />
                     </motion.div>

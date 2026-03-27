@@ -16,7 +16,7 @@ export function Navbar() {
         <div className="glass rounded-2xl px-4 py-2.5 flex items-center justify-between">
           {/* Logo */}
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-500 to-purple-700
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-sky-500 to-blue-700
                             flex items-center justify-center shadow-glow-sm">
               <Download size={15} className="text-white" strokeWidth={2.5} />
             </div>
@@ -25,7 +25,7 @@ export function Navbar() {
                 Media<span className="gradient-text">Loader</span>
               </span>
               <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md
-                               bg-violet-500/15 text-violet-400 border border-violet-500/25 leading-none">
+                               bg-sky-500/15 text-sky-500 border border-sky-500/25 leading-none">
                 BETA
               </span>
             </div>

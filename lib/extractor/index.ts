@@ -4,7 +4,7 @@
  */
 
 export { isYouTubeUrl, extractYouTubeId, getYouTubeInfo } from './youtube'
-export { isInstagramUrl, extractInstagramShortcode, getInstagramInfo } from './instagram'
+export { isInstagramUrl, extractInstagramShortcode, getInstagramInfo, resolveInstagramDirectMediaUrl } from './instagram'
 export type { MediaInfo, MediaFormat, MediaPlatform, FormatType, ExtractorResult } from './types'
 
 import { isYouTubeUrl, getYouTubeInfo } from './youtube'

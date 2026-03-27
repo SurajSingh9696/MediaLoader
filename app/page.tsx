@@ -120,15 +120,15 @@ export default function Home() {
       {/* Background orbs */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
         <div
-          className="orb w-[600px] h-[600px] bg-violet-600/15 -top-64 -left-32"
+          className="orb w-[600px] h-[600px] bg-sky-500/15 -top-64 -left-32"
           style={{ animationDelay: '0s' }}
         />
         <div
-          className="orb w-[500px] h-[500px] bg-purple-700/10 top-1/2 -right-48"
+          className="orb w-[500px] h-[500px] bg-blue-600/10 top-1/2 -right-48"
           style={{ animationDelay: '3s' }}
         />
         <div
-          className="orb w-[400px] h-[400px] bg-fuchsia-700/8 bottom-0 left-1/3"
+          className="orb w-[400px] h-[400px] bg-teal-500/10 bottom-0 left-1/3"
           style={{ animationDelay: '6s' }}
         />
         {/* Grid pattern overlay */}
@@ -158,13 +158,13 @@ export default function Home() {
               animate={{ scale: 1 }}
               transition={{ delay: 0.1, type: 'spring', stiffness: 200 }}
               className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full
-                         bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs font-medium mb-2"
+                         bg-sky-500/10 border border-sky-500/20 text-sky-500 text-xs font-medium mb-2"
             >
               <Sparkles size={11} />
               Free · No login required · Unlimited downloads
             </motion.div>
 
-            <h1 className="text-4xl sm:text-5xl font-black tracking-tight leading-tight">
+            <h1 className="display-font text-4xl sm:text-5xl font-black tracking-tight leading-tight">
               <span className="text-text-primary">Download </span>
               <span className="gradient-text">Any Video</span>
               <br />
@@ -188,6 +188,7 @@ export default function Home() {
             <UrlInput
               onResult={handleResult}
               onLoading={setIsLoading}
+              onSearchStart={handleReset}
               isLoading={isLoading}
             />
           </motion.div>
