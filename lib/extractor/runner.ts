@@ -25,6 +25,10 @@ function getFfmpegPath(): string | null {
 
 const FFMPEG_PATH = getFfmpegPath()
 
+function getFfmpegBin(): string {
+  return FFMPEG_PATH ?? 'ffmpeg'
+}
+
 /** Prepend --ffmpeg-location if we have a bundled binary */
 function withFfmpeg(args: string[]): string[] {
   if (FFMPEG_PATH) return ['--ffmpeg-location', FFMPEG_PATH, ...args]
@@ -135,6 +139,46 @@ export function runYtDlpToFile(
       const filename = files[0]
       const ext = filename.slice(filename.lastIndexOf('.') + 1)
       resolve({ filePath: join(outDir, filename), ext })
+    })
+  })
+}
+
+/** Merge a video file with a best-available audio file into a high-quality MP4 output. */
+export function mergeVideoWithBestAudio(
+  videoPath: string,
+  audioPath: string,
+  opts?: { timeout?: number }
+): Promise<{ filePath: string; ext: string }> {
+  const outPath = join(tmpdir(), `medialoader_merge_${randomUUID()}.mp4`)
+
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-y',
+      '-i', videoPath,
+      '-i', audioPath,
+      '-map', '0:v:0',
+      '-map', '1:a:0',
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '320k',
+      outPath,
+    ]
+
+    const errChunks: Buffer[] = []
+    const proc = spawn(getFfmpegBin(), args, {
+      timeout: opts?.timeout ?? 600_000,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+
+    proc.stderr.on('data', (chunk: Buffer) => errChunks.push(chunk))
+    proc.on('error', (err) => reject(new Error(`ffmpeg spawn error: ${err.message}`)))
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        const msg = Buffer.concat(errChunks).toString('utf8').trim()
+        return reject(new Error(msg || `ffmpeg exited with code ${code}`))
+      }
+
+      resolve({ filePath: outPath, ext: 'mp4' })
     })
   })
 }

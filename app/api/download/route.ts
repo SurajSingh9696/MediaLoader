@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createReadStream, statSync, unlink } from 'fs'
-import { isYouTubeUrl, resolveYtFormatSelector } from '@/lib/extractor/youtube'
+import { createReadStream, statSync, unlink, existsSync, unlinkSync } from 'fs'
+import { isYouTubeUrl, resolveYtFormatSelector, resolveYtVideoOnlySelector } from '@/lib/extractor/youtube'
 import { isInstagramUrl, resolveInstagramDirectMediaUrl } from '@/lib/extractor/instagram'
-import { runYtDlpToFile } from '@/lib/extractor/runner'
+import { mergeVideoWithBestAudio, runYtDlpToFile } from '@/lib/extractor/runner'
 import { isValidUrl } from '@/lib/utils'
 
 // Allow up to 10 minutes for large video downloads
@@ -51,6 +51,15 @@ function fileToWebStream(filePath: string): ReadableStream<Uint8Array> {
     },
     cancel() { nodeStream.destroy(); unlink(filePath, () => {}) },
   })
+}
+
+function safeUnlink(filePath?: string) {
+  if (!filePath) return
+  try {
+    if (existsSync(filePath)) unlinkSync(filePath)
+  } catch {
+    // Ignore cleanup errors.
+  }
 }
 
 async function tryStreamDirectMedia(
@@ -115,7 +124,8 @@ export async function GET(request: NextRequest) {
   const preferredFilename = `${base}.${preferredExt}`
 
   // ── Direct media URL path (for all platforms if extractor provided one) ───
-  if (formatUrl && isValidUrl(formatUrl)) {
+  // Skip YouTube audio direct-stream path so we can force a compatible M4A output.
+  if (formatUrl && isValidUrl(formatUrl) && !(isYT && isAudio)) {
     const directResponse = await tryStreamDirectMedia(formatUrl, preferredFilename, isAudio)
     if (directResponse) return directResponse
   }
@@ -132,17 +142,51 @@ export async function GET(request: NextRequest) {
   // ── Download to temp file ──────────────────────────────────────────────────
   let filePath: string
   let actualExt: string
+  let tempVideoPath: string | undefined
+  let tempAudioPath: string | undefined
 
   try {
-    const result = await runYtDlpToFile([
-      '-f', selector,
-      '--no-playlist',
-      ...(isAudio ? [] : ['--merge-output-format', 'mp4']),
-      url,
-    ])
-    filePath  = result.filePath
-    actualExt = result.ext
+    if (isYT && !isAudio && formatId.startsWith('yt_va_')) {
+      const videoSelector = resolveYtVideoOnlySelector(formatId)
+
+      const videoResult = await runYtDlpToFile([
+        '-f', videoSelector,
+        '--no-playlist',
+        url,
+      ])
+      tempVideoPath = videoResult.filePath
+
+      const audioResult = await runYtDlpToFile([
+        '-f', 'bestaudio',
+        '--no-playlist',
+        url,
+      ])
+      tempAudioPath = audioResult.filePath
+
+      const merged = await mergeVideoWithBestAudio(tempVideoPath, tempAudioPath)
+      filePath = merged.filePath
+      actualExt = merged.ext
+
+      safeUnlink(tempVideoPath)
+      safeUnlink(tempAudioPath)
+      tempVideoPath = undefined
+      tempAudioPath = undefined
+    } else {
+      const result = await runYtDlpToFile([
+        '-f', selector,
+        '--no-playlist',
+        ...(isAudio
+          ? ['-x', '--audio-format', 'm4a', '--audio-quality', '0']
+          : ['--merge-output-format', 'mp4']),
+        url,
+      ])
+      filePath  = result.filePath
+      actualExt = result.ext
+    }
   } catch (err) {
+    safeUnlink(tempVideoPath)
+    safeUnlink(tempAudioPath)
+
     const msg = err instanceof Error ? err.message : 'Download failed'
     console.error('[/api/download] yt-dlp error:', msg)
 

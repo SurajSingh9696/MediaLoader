@@ -33,12 +33,12 @@ export function isYouTubeUrl(url: string): boolean {
 // NOTE: Filters inside [] must use separate bracket groups, NOT commas.
 
 const VIDEO_TIERS = [
-  { height: 2160, label: '4K (2160p)', selector: 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]' },
-  { height: 1440, label: '1440p QHD',  selector: 'bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]' },
-  { height: 1080, label: '1080p FHD',  selector: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]' },
-  { height: 720,  label: '720p HD',    selector: 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]' },
-  { height: 480,  label: '480p SD',    selector: 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]' },
-  { height: 360,  label: '360p',       selector: 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]' },
+  { height: 2160, label: '4K (2160p)', selector: 'bestvideo[height<=2160]+bestaudio/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]' },
+  { height: 1440, label: '1440p QHD',  selector: 'bestvideo[height<=1440]+bestaudio/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]' },
+  { height: 1080, label: '1080p FHD',  selector: 'bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]' },
+  { height: 720,  label: '720p HD',    selector: 'bestvideo[height<=720]+bestaudio/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]' },
+  { height: 480,  label: '480p SD',    selector: 'bestvideo[height<=480]+bestaudio/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]' },
+  { height: 360,  label: '360p',       selector: 'bestvideo[height<=360]+bestaudio/bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]' },
 ] as const
 
 const AUDIO_TIERS = [
@@ -161,7 +161,8 @@ function buildFormats(rawFmts: RawFormat[], duration?: number): MediaFormat[] {
       hasAudio:     true,
       hasVideo:     true,
       filesize:     duration ? estimateTierSize(rawFmts, tier.height, duration) : undefined,
-      url:          findMuxedUrlAtHeight(rawFmts, tier.height),
+      // Keep video tier downloads on yt-dlp selectors to avoid low-res muxed fallbacks.
+      url:          undefined,
     })
   }
 
@@ -241,4 +242,17 @@ export function resolveYtFormatSelector(formatId: string): string {
   }
   const tier = AUDIO_TIERS.find(t => t.kbps === key)
   return tier?.selector ?? 'bestaudio[ext=m4a]/bestaudio'
+}
+
+/** Resolve internal video tier formatId -> video-only selector */
+export function resolveYtVideoOnlySelector(formatId: string): string {
+  const parts = formatId.split('_')
+  const type = parts[1]
+  const key = parseInt(parts[2])
+
+  if (type !== 'va' || Number.isNaN(key)) {
+    return 'bestvideo'
+  }
+
+  return `bestvideo[height<=${key}]/bestvideo[height<=${key}][ext=mp4]`
 }
