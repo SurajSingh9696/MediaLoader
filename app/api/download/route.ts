@@ -8,6 +8,13 @@ import { isValidUrl } from '@/lib/utils'
 // Allow up to 10 minutes for large video downloads
 export const maxDuration = 600
 
+const PROXY_ENABLED = process.env.ENABLE_EXTERNAL_DOWNLOADER_PROXY === 'true'
+const EXTERNAL_DOWNLOADER_URL = process.env.EXTERNAL_DOWNLOADER_URL?.replace(/\/+$/, '')
+
+function canProxyToExternalDownloader(): boolean {
+  return PROXY_ENABLED && !!EXTERNAL_DOWNLOADER_URL
+}
+
 /** Strip characters that are invalid in filenames across all major OS */
 function sanitizeFilename(title: string): string {
   return title
@@ -108,6 +115,40 @@ export async function GET(request: NextRequest) {
   if (!url || !formatId) {
     return NextResponse.json({ error: 'url and formatId are required' }, { status: 400 })
   }
+
+  if (canProxyToExternalDownloader()) {
+    try {
+      const upstream = await fetch(`${EXTERNAL_DOWNLOADER_URL}/api/download?${sp.toString()}`, {
+        cache: 'no-store',
+      })
+
+      if (!upstream.body) {
+        return NextResponse.json({ error: 'External downloader returned empty response.' }, { status: 502 })
+      }
+
+      const passHeaders = new Headers()
+      const names = [
+        'content-type',
+        'content-disposition',
+        'content-length',
+        'cache-control',
+        'transfer-encoding',
+      ]
+      for (const name of names) {
+        const value = upstream.headers.get(name)
+        if (value) passHeaders.set(name, value)
+      }
+
+      return new NextResponse(upstream.body, {
+        status: upstream.status,
+        headers: passHeaders,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'External downloader request failed'
+      return NextResponse.json({ error: message }, { status: 502 })
+    }
+  }
+
   if (!isValidUrl(url)) {
     return NextResponse.json({ error: 'Invalid URL' }, { status: 400 })
   }
