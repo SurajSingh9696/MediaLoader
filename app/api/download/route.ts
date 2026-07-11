@@ -5,8 +5,8 @@ import { isInstagramUrl, resolveInstagramDirectMediaUrl } from '@/lib/extractor/
 import { mergeVideoWithBestAudio, runYtDlpToFile } from '@/lib/extractor/runner'
 import { isValidUrl } from '@/lib/utils'
 
-// Allow up to 10 minutes for large video downloads
-export const maxDuration = 600
+// Allow up to 5 minutes for large video downloads
+export const maxDuration = 300
 
 /** Strip characters that are invalid in filenames across all major OS */
 function sanitizeFilename(title: string): string {
