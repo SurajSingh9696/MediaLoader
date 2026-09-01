@@ -63,7 +63,7 @@ def yt_client_args(url: str) -> list[str]:
     if not is_youtube_url(url):
         return []
 
-    args = ["--extractor-args", "youtube:player_client=ios,mweb"]
+    args = ["--extractor-args", "youtube:player_client=tv_embedded,android,ios"]
 
     if YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
         args += ["--cookies", YTDLP_COOKIES_FILE]
