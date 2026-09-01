@@ -1,11 +1,17 @@
-[phases.setup]
-aptPkgs = ["ffmpeg", "python3-pip"]
+# Railway: use Dockerfile instead (nixpacks.toml is kept only as reference)
+# The Dockerfile in this directory takes precedence when Railway detects it.
 
-[phases.install]
-cmds = [
-  "pip install -r requirements.txt",
-  "pip install yt-dlp"
-]
+# If you ever want to switch back to nixpacks, un-comment the lines below
+# and delete the Dockerfile:
 
-[start]
-cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+# [phases.setup]
+# aptPkgs = ["ffmpeg"]
+
+# [phases.install]
+# cmds = [
+#   "pip install -r requirements.txt",
+#   "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp"
+# ]
+
+# [start]
+# cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
