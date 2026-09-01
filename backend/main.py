@@ -44,6 +44,32 @@ app.add_middleware(
 YTDLP_BIN  = os.getenv("YTDLP_PATH", "yt-dlp")
 FFMPEG_BIN = os.getenv("FFMPEG_PATH", "ffmpeg")
 
+# Optional path to a Netscape-format cookies.txt (e.g. exported via browser extension).
+# Set YTDLP_COOKIES_FILE on Railway/Render if you need authenticated downloads.
+YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+
+
+def yt_client_args(url: str) -> list[str]:
+    """
+    Return extra yt-dlp flags for YouTube URLs to bypass server-IP bot detection.
+
+    YouTube increasingly challenges server requests with "Sign in to confirm
+    you're not a bot." Using the iOS/mweb player clients avoids this for
+    the vast majority of public videos without requiring cookies.
+
+    If YTDLP_COOKIES_FILE is set, also pass --cookies so age-restricted
+    videos (which genuinely need an account) can be fetched.
+    """
+    if not is_youtube_url(url):
+        return []
+
+    args = ["--extractor-args", "youtube:player_client=ios,mweb"]
+
+    if YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
+        args += ["--cookies", YTDLP_COOKIES_FILE]
+
+    return args
+
 # ── YouTube helpers ───────────────────────────────────────────────────────────
 
 YT_PATTERNS = [
@@ -336,12 +362,17 @@ def get_info(url: str = Query(..., description="YouTube or Instagram URL")):
         raise HTTPException(status_code=400, detail="Unsupported platform. Only YouTube and Instagram are supported.")
 
     try:
-        raw = run_ytdlp(["--dump-json", "--no-playlist", "--no-warnings", url], timeout=60)
+        raw = run_ytdlp(
+            ["--dump-json", "--no-playlist", "--no-warnings"] + yt_client_args(url) + [url],
+            timeout=60
+        )
         info = json.loads(raw.strip().split("\n")[0])
     except Exception as e:
         msg = str(e)
-        if "Sign in" in msg or "age" in msg:
-            raise HTTPException(status_code=422, detail="This video requires sign-in or is age-restricted.")
+        if "Sign in to confirm" in msg or "bot" in msg.lower():
+            raise HTTPException(status_code=422, detail="YouTube is blocking this request from the server. Try again in a moment.")
+        if "Sign in" in msg and "age" in msg:
+            raise HTTPException(status_code=422, detail="This video is age-restricted and requires sign-in.")
         if "unavailable" in msg or "not available" in msg:
             raise HTTPException(status_code=422, detail="Video is unavailable or private.")
         if "spawn" in msg or "No such file" in msg:
@@ -441,13 +472,15 @@ def download_media(
             video_selector = resolve_yt_video_only_selector(formatId)
 
             subprocess.run(
-                [YTDLP_BIN, "-f", video_selector, "--no-playlist", "--no-part", "--no-warnings",
-                 "-o", video_template, url],
+                [YTDLP_BIN, "-f", video_selector, "--no-playlist", "--no-part", "--no-warnings"]
+                + yt_client_args(url)
+                + ["-o", video_template, url],
                 check=True, timeout=600, capture_output=True
             )
             subprocess.run(
-                [YTDLP_BIN, "-f", "bestaudio", "--no-playlist", "--no-part", "--no-warnings",
-                 "-o", audio_template, url],
+                [YTDLP_BIN, "-f", "bestaudio", "--no-playlist", "--no-part", "--no-warnings"]
+                + yt_client_args(url)
+                + ["-o", audio_template, url],
                 check=True, timeout=600, capture_output=True
             )
 
@@ -483,6 +516,7 @@ def download_media(
                 "--no-playlist",
                 "--no-part",
                 "--no-warnings",
+            ] + yt_client_args(url) + [
                 "-o", template,
             ]
             if is_audio:
@@ -538,8 +572,10 @@ def download_media(
         msg = stderr or f"yt-dlp exited with code {e.returncode}"
 
         user_msg = "Download failed. Please try again."
-        if "Sign in" in msg or "age" in msg:
-            user_msg = "This video requires sign-in."
+        if "Sign in to confirm" in msg or "bot" in msg.lower():
+            user_msg = "YouTube is blocking this request from the server. Try again in a moment."
+        elif "Sign in" in msg and "age" in msg:
+            user_msg = "This video is age-restricted and requires sign-in."
         elif "unavailable" in msg:
             user_msg = "Video is unavailable."
         elif "private" in msg:
